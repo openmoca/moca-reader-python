@@ -59,7 +59,7 @@ jobs:
           ref: ${{ env.MOCA_SPEC_REF }}
           path: moca-spec
           token: ${{ secrets.MOCA_REPOS_TOKEN || github.token }}
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v7
         with:
           python-version: ${{ matrix.python }}
       - run: uv sync --locked
@@ -94,7 +94,7 @@ jobs:
           ref: ${{ env.MOCA_TOOLS_REF }}
           path: moca-tools
           token: ${{ secrets.MOCA_REPOS_TOKEN || github.token }}
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v7
         with:
           python-version: '3.14'
       - uses: actions/setup-node@v4
@@ -144,7 +144,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v7
       - uses: actions/setup-node@v4
         with:
           node-version: 22
