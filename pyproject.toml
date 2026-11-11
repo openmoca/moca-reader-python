@@ -1,0 +1,80 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "moca-reader"
+version = "0.6.0"
+description = "Reads, verifies, searches and cites MOCA packages (moca-spec 0.6)."
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+authors = [{ name = "MOCA Standard Contributors" }]
+requires-python = ">=3.11"
+dependencies = [
+  "PyYAML>=6.0.2",
+  "jsonschema>=4.23",
+  "rfc3339-validator>=0.1.4",
+  "rdflib>=7.1",
+  "cryptography>=44",
+]
+keywords = ["moca", "rag", "retrieval", "citations", "knowledge packages", "ai"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Typing :: Typed",
+]
+
+[project.optional-dependencies]
+# Offline Sigstore verification against the host's trusted root (attestations §6). The Reader uses
+# sigstore-python's TrustedRoot constructor, so the major version is pinned.
+sigstore = ["sigstore>=4.5,<5"]
+# The standard embedding models (moca_reader.embedders): ONNX Runtime and Hugging Face's tokenizers.
+onnx = ["onnxruntime>=1.20", "tokenizers>=0.20", "numpy>=1.26"]
+
+[project.urls]
+Homepage = "https://openmoca.org"
+Source = "https://github.com/openmoca/moca-reader-python"
+
+[tool.uv.workspace]
+members = ["packages/*"]
+
+[dependency-groups]
+dev = [
+  "sigstore>=4.5,<5",
+  "moca-reader-langchain",
+  "moca-reader-llamaindex",
+  "pytest>=8",
+  "ruff>=0.8",
+  "mypy>=1.13",
+  "types-PyYAML",
+  "types-jsonschema",
+]
+
+[tool.uv.sources]
+moca-reader-langchain = { workspace = true }
+moca-reader-llamaindex = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/moca_reader"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
+# ruff format owns line length; long strings and messages stay whole.
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["src", "packages/moca-reader-langchain/src", "packages/moca-reader-llamaindex/src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests", "packages/moca-reader-langchain/tests", "packages/moca-reader-llamaindex/tests"]
+# Each test folder has its own conftest.py; importlib mode loads each by its path, not by module name.
+addopts = ["--import-mode=importlib"]

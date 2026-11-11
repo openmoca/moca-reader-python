@@ -1,0 +1,15 @@
+MOCA — Modular Ontology, Content & Attestation
+Copyright 2026 MOCA Standard Contributors
+
+This product includes software developed by the MOCA Standard Contributors
+(https://github.com/openmoca).
+
+Licensed under the Apache License, Version 2.0. You may obtain a copy of the
+License in the LICENSE file in this repository, or at
+http://www.apache.org/licenses/LICENSE-2.0
+
+---
+
+The MOCA Reader for Python and its framework bindings (the files under src/,
+packages/ and tests/). All of it is licensed under the Apache License,
+Version 2.0.

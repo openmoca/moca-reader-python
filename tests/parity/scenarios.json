@@ -1,0 +1,43 @@
+{
+  "now": "2026-10-29T00:00:00Z",
+  "limit": 5,
+  "packages": {
+    "afh": "examples/pdf/airplane-flying-handbook",
+    "yt": "examples/youtube/playlist",
+    "kb": "examples/support-kb"
+  },
+  "sidecars": {
+    "afh-lex": { "package": "afh", "chunk": "headings" },
+    "afh-dense": { "package": "afh", "chunk": "headings", "embedder": true },
+    "afh-dense.zip": { "package": "afh", "chunk": "headings", "embedder": true, "zip": true },
+    "afh-dense-notext": { "from": "afh-dense", "dropText": true },
+    "yt-dense": { "package": "yt", "chunk": "headings", "embedder": true },
+    "kb-dense": { "package": "kb", "chunk": "headings", "embedder": true }
+  },
+  "queries": {
+    "afh": ["how do I recover from a spin", "crosswind landing technique", "engine failure after takeoff", "stall warning horn", "visual illusions when flying at night", "what is ground effect"],
+    "yt": ["how do agents call tools", "keyword versus vector search", "human in the loop checkpoints"],
+    "kb": ["refund window", "remboursement", "delete my account"],
+    "mixed": ["refund window", "orchestration of agents", "landing flare"]
+  },
+  "scenarios": [
+    { "name": "afh lexical, no sidecar", "load": [["afh"]], "backend": "lexical", "queries": "afh" },
+    { "name": "afh lexical, lexical sidecar", "load": [["afh", "afh-lex"]], "backend": "lexical", "queries": "afh" },
+    { "name": "afh lexical, text-less sidecar", "load": [["afh", "afh-dense-notext"]], "backend": "lexical", "queries": "afh" },
+    { "name": "afh dense", "load": [["afh", "afh-dense"]], "backend": "dense", "queries": "afh" },
+    { "name": "afh dense, zipped sidecar", "load": [["afh", "afh-dense.zip"]], "backend": "dense", "queries": "afh" },
+    { "name": "afh dense, other model", "load": [["afh", "afh-dense"]], "backend": "dense", "embedder": "other", "queries": "afh" },
+    { "name": "afh store, lexical", "load": [["afh", "afh-lex"]], "backend": "store-lexical", "queries": "afh" },
+    { "name": "afh store, dense", "load": [["afh", "afh-lex"]], "backend": "store-dense", "queries": "afh" },
+    { "name": "afh hybrid", "load": [["afh", "afh-dense"]], "backend": "hybrid", "queries": "afh" },
+    { "name": "afh hybrid, dense weight 3", "load": [["afh", "afh-dense"]], "backend": "hybrid", "hybrid": { "weights": { "dense": 3 } }, "queries": "afh" },
+    { "name": "afh lexical, diversified", "load": [["afh", "afh-lex"]], "backend": "lexical", "diversify": 1, "queries": "afh" },
+    { "name": "mixed dense", "load": [["afh", "afh-dense"], ["yt"], ["kb", "kb-dense"]], "backend": "dense", "queries": "mixed" },
+    { "name": "mixed lexical", "load": [["afh", "afh-dense"], ["yt", "yt-dense"], ["kb"]], "backend": "lexical", "queries": "mixed" },
+    { "name": "mixed hybrid", "load": [["afh", "afh-dense"], ["yt"], ["kb", "kb-dense"]], "backend": "hybrid", "queries": "mixed" },
+    { "name": "playlist dense (WebVTT)", "load": [["yt", "yt-dense"]], "backend": "dense", "queries": "yt" },
+    { "name": "kb lexical, fr", "load": [["kb"]], "backend": "lexical", "locale": "fr", "queries": "kb" },
+    { "name": "kb lexical, public audience", "load": [["kb"]], "backend": "lexical", "audiences": ["public"], "queries": "kb" },
+    { "name": "kb dense, fr", "load": [["kb", "kb-dense"]], "backend": "dense", "locale": "fr", "queries": "kb" }
+  ]
+}

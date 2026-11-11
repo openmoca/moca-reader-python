@@ -1,0 +1,25 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "moca-reader-llamaindex"
+version = "0.6.0"
+description = "A LlamaIndex retriever over MOCA packages: citation records as scored nodes, through the MOCA Reader's gate."
+readme = "README.md"
+license = "Apache-2.0"
+authors = [{ name = "MOCA Standard Contributors" }]
+requires-python = ">=3.11"
+dependencies = ["moca-reader==0.6.0", "llama-index-core>=0.14"]
+keywords = ["moca", "llamaindex", "llama-index", "retriever", "rag", "citations"]
+classifiers = ["Development Status :: 4 - Beta", "Programming Language :: Python :: 3", "Typing :: Typed"]
+
+[project.urls]
+Homepage = "https://openmoca.org"
+Source = "https://github.com/openmoca/moca-reader-python"
+
+[tool.uv.sources]
+moca-reader = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/moca_reader_llamaindex"]
