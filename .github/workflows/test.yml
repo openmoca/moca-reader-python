@@ -141,7 +141,7 @@ jobs:
           ref: ${{ env.MOCA_TOOLS_REF }}
           path: moca-tools
           token: ${{ secrets.MOCA_REPOS_TOKEN || github.token }}
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.11'
       - uses: astral-sh/setup-uv@v6
