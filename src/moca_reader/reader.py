@@ -15,8 +15,11 @@ from typing import Any
 
 from ._js import get, json_loads, parse_date, truthy
 from .attestations import (
+    PREDICATE_ISSUED_COPY,
     PREDICATE_PACKAGE,
     PREDICATE_REVIEW,
+    ParsedAttestation,
+    SignatureResult,
     TrustRoot,
     check_package_statement,
     check_review_statement,
@@ -28,6 +31,7 @@ from .content import ContentNode, read_content
 from .diagnostics import Diagnostic, Diagnostics
 from .digest import ATTESTATIONS_DIR, MANIFEST, compute_digest, package_files
 from .envelope import Decryptor, EnvelopeCheck, KeyProvider, is_envelope, outline_mismatch, read_envelope
+from .issued_copy import IssuedCopyCheck, check_issued_copy
 from .manifest import check_catalogue, check_manifest
 from .profiles import KNOWN_PROFILES
 from .reading_order import ReadingOrder, resolve_reading_order
@@ -48,6 +52,8 @@ class Review:
     outcome: str
     signer: str | None
     scope: str | None = None
+    # Attestations §7.1: a review of a file the issuer of an issued copy changed. It never counts.
+    file_changed: bool = False
 
 
 @dataclass
@@ -87,6 +93,8 @@ class PackageResult:
     apps: list[str] | None = None
     # Package spec §4.10: the ordered collection the package is read in, when it resolves.
     reading_order: str | None = None
+    # Attestations §7.1: {"originalDigest", "issuers", "changedFiles"} for an issued copy that passed verification.
+    issued_copy: dict[str, Any] | None = None
     _reading_order: ReadingOrder | None = field(default=None, repr=False)
     _catalogue: dict[str, Any] = field(default_factory=dict, repr=False)
     # Encrypted packages §5.3: for an envelope only; {"format", "opened"} and, unopened, the unverified "outline".
@@ -299,15 +307,47 @@ def _read(
     return _finish(result, diagnostics)
 
 
+_ROLES = {PREDICATE_PACKAGE: "package", PREDICATE_REVIEW: "review", PREDICATE_ISSUED_COPY: "issued-copy"}
+
+
+def _signature(
+    file: str,
+    parsed: ParsedAttestation,
+    role: str,
+    record: dict[str, Any],
+    options: _Options,
+    diagnostics: Diagnostics,
+) -> SignatureResult | None:
+    """Attestations §7 steps 6-7: the signature outcome, reported; the result when it is valid, else None."""
+    sig = verify_signature(parsed, options.trust_root, role, options.now)
+    record.update({"outcome": sig.outcome, "signer": sig.signer, "reason": sig.reason})
+    if sig.outcome == "unverifiable":
+        diagnostics.add("A003_ATTESTATION_UNVERIFIABLE", f"{role} attestation not checked: {sig.reason}", file)
+        return None
+    if sig.outcome == "indeterminate":
+        diagnostics.add("A004_ATTESTATION_INDETERMINATE", sig.reason or "", file)
+        return None
+    if sig.outcome == "invalid":
+        diagnostics.add("A002_ATTESTATION_INVALID", f"{role} attestation signature did not verify: {sig.reason}", file)
+        return None
+    return sig
+
+
+def _invalid(record: dict[str, Any], file: str, reason: str, diagnostics: Diagnostics) -> None:
+    record["outcome"], record["reason"] = "invalid", reason
+    diagnostics.add("A002_ATTESTATION_INVALID", reason, file)
+
+
 def _read_attestations(
     result: PackageResult, data: dict[str, bytes], options: _Options, diagnostics: Diagnostics
 ) -> None:
     from ._js import js_sorted
 
-    manifest, digest = result.manifest, result.digest or ""
+    manifest = result.manifest
     attestation_files = js_sorted(
         p for p in data if p.startswith(f"{ATTESTATIONS_DIR}/") and re.search(r"\.(dsse|sigstore)\.json\Z", p)
     )
+    pending: list[tuple[str, ParsedAttestation, str, dict[str, Any]]] = []
     for file in attestation_files:
         parsed = parse_attestation(file, data[file])
         if isinstance(parsed, str):
@@ -315,35 +355,60 @@ def _read_attestations(
             result.attestations.append({"file": file, "outcome": "malformed", "reason": parsed})
             continue
         kind = parsed.statement["predicateType"]
-        if kind not in (PREDICATE_PACKAGE, PREDICATE_REVIEW):
+        found_role = _ROLES.get(kind) if isinstance(kind, str) else None
+        if found_role is None:
             result.attestations.append(
                 {"file": file, "predicateType": kind, "outcome": "ignored", "reason": "unknown predicate type"}
             )
             continue
-        role = "package" if kind == PREDICATE_PACKAGE else "review"
-        sig = verify_signature(parsed, options.trust_root, role, options.now)
-        record: dict[str, Any] = {
-            "file": file,
-            "predicateType": kind,
-            "role": role,
-            "format": parsed.format,
-            "outcome": sig.outcome,
-            "signer": sig.signer,
-            "reason": sig.reason,
-        }
-        result.attestations.append(record)
-        if sig.outcome == "unverifiable":
-            diagnostics.add("A003_ATTESTATION_UNVERIFIABLE", f"{role} attestation not checked: {sig.reason}", file)
-            continue
-        if sig.outcome == "indeterminate":
-            diagnostics.add("A004_ATTESTATION_INDETERMINATE", sig.reason or "", file)
-            continue
-        if sig.outcome == "invalid":
-            diagnostics.add(
-                "A002_ATTESTATION_INVALID", f"{role} attestation signature did not verify: {sig.reason}", file
-            )
-            continue
+        entry: dict[str, Any] = {"file": file, "predicateType": kind, "role": found_role, "format": parsed.format}
+        result.attestations.append(entry)
+        pending.append((file, parsed, found_role, entry))
 
+    # Attestations §7.1, pass 1: issued-copy attestations, before the others.
+    passed: list[tuple[str, dict[str, Any], str, IssuedCopyCheck]] = []
+    for file, parsed, role, record in pending:
+        if role != "issued-copy":
+            continue
+        sig = _signature(file, parsed, role, record, options, diagnostics)
+        if sig is None:
+            continue
+        check = check_issued_copy(
+            parsed.statement,
+            sig,
+            manifest,
+            result.digest or "",
+            result.file_digests,
+            not diagnostics.has("M002_MANIFEST_SCHEMA"),
+        )
+        if check.error:
+            _invalid(record, file, f"issued-copy attestation: {check.error}", diagnostics)
+            continue
+        passed.append((file, record, sig.signer or "", check))
+    issued: IssuedCopyCheck | None = None
+    if passed and all(p[3].original == passed[0][3].original and p[3].changed == passed[0][3].changed for p in passed):
+        issued = passed[0][3]
+        result.issued_copy = {
+            "originalDigest": issued.original,
+            "issuers": [p[2] for p in passed],
+            "changedFiles": js_sorted(issued.changed),
+        }
+    else:
+        # Several that disagree are each A002, and none is used.
+        for file, record, _, _ in passed:
+            _invalid(
+                record, file, "issued-copy attestations disagree on original or changedFiles; none is used", diagnostics
+            )
+
+    # Pass 2: package attestations against the rebuilt original digest when there is an issued copy.
+    digest = issued.original if issued is not None and issued.original else (result.digest or "")
+    for file, parsed, role, record in pending:
+        if role == "issued-copy":
+            continue
+        signature = _signature(file, parsed, role, record, options, diagnostics)
+        if signature is None:
+            continue
+        sig = signature
         if role == "package":
             mismatch = check_package_statement(parsed.statement, get(manifest, "id"), get(manifest, "version"), digest)
             if mismatch:
@@ -384,18 +449,31 @@ def _read_attestations(
             record["outcome"], record["reason"] = "ignored", reason
             diagnostics.add("A007_REVIEW_DATE_FUTURE", reason, file)
             continue
-        record["current"], record["outdated"] = review.current, review.outdated
-        for path in review.outdated:
+        # Attestations §7.1: in an issued copy, a review of the publisher's bytes of a changed file is listed with
+        # fileChanged and never counts; it is not outdated.
+        subjects = [x for x in parsed.statement.get("subject") or [] if isinstance(x, dict)]
+
+        def changed(path: str, subjects: list[dict[str, Any]] = subjects) -> bool:
+            if issued is None:
+                return False
+            original = issued.changed.get(normalize("NFC", path))
+            return any(x.get("name") == path and get(x.get("digest"), "sha256") == original for x in subjects)
+
+        file_changed = [p for p in review.outdated if changed(p)]
+        record["current"] = review.current
+        record["outdated"] = [p for p in review.outdated if not changed(p)]
+        for path in record["outdated"]:
             diagnostics.add("A006_REVIEW_OUTDATED", f"review of {path} no longer matches the file", file)
-        for path in review.current:
-            entry = Review(
+        for path in [*review.current, *file_changed]:
+            review_entry = Review(
                 predicate["reviewer"],
                 predicate["reviewedAt"],
                 predicate["outcome"],
                 sig.signer,
                 predicate.get("scope") if truthy(predicate.get("scope")) else None,
+                path in file_changed,
             )
-            result.reviews_by_file.setdefault(normalize("NFC", path), []).append(entry)
+            result.reviews_by_file.setdefault(normalize("NFC", path), []).append(review_entry)
     # Attestations §4: for each file, the latest review from each signer counts.
     for path, entries in result.reviews_by_file.items():
         latest: dict[str | None, Review] = {}
@@ -519,9 +597,13 @@ def _finish(result: PackageResult, diagnostics: Diagnostics) -> PackageResult:
                 all_local = False
             if rep.locale:
                 caps.add("localized")
-            if rep.file in result.reviews_by_file:
+            reviews = result.reviews_by_file.get(rep.file, [])
+            # Attestations §7.1: an issued copy whose issuer changed a reviewed file is not reviewed.
+            if any(r.file_changed for r in reviews):
+                all_approved = False
+            if any(not r.file_changed for r in reviews):
                 reviewed_files += 1
-                if review_status_of(result.reviews_by_file[rep.file], bool(result.signers)) != "approved":
+                if review_status_of(reviews, bool(result.signers)) != "approved":
                     all_approved = False
     if "located-evidence" in caps and all_local:
         caps.add("self-contained-evidence")

@@ -91,10 +91,18 @@ class Library:
         if same is not None:
             # Contract §7: one id@version, one digest. A second digest is refused and reported.
             if same.result.digest != result.digest:
-                self.diagnostics.add(
-                    "L001_IDENTITY_CONFLICT",
-                    f"{key} is already loaded with digest {same.result.digest}; {result.digest} is refused",
-                )
+                # Package spec §13.5: a second issued copy of the same original is expected, and only noted.
+                original = (same.result.issued_copy or {}).get("originalDigest")
+                if original and original == (result.issued_copy or {}).get("originalDigest"):
+                    self.diagnostics.add(
+                        "L002_ISSUED_COPY_DUPLICATE",
+                        f"{key} is already loaded as another issued copy of {original}; {result.digest} is not loaded",
+                    )
+                else:
+                    self.diagnostics.add(
+                        "L001_IDENTITY_CONFLICT",
+                        f"{key} is already loaded with digest {same.result.digest}; {result.digest} is refused",
+                    )
             return self
         self.packages.append(LoadedPackage(result, chunks, index))
         self._structure = None

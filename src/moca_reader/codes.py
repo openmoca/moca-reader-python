@@ -101,6 +101,10 @@ CODES: dict[str, tuple[str, str]] = {
         ERROR,
         "A library was given a second package with the same id and version but a different digest; the second is refused.",
     ),
+    "L002_ISSUED_COPY_DUPLICATE": (
+        INFO,
+        "A library was given a second issued copy of the same original. The second is not loaded.",
+    ),
     "R004_RELATION_UNAUTHORISED": (
         INFO,
         "A supersedes or conflictsWith relation is not authorised by a signer of the package, so it has no effect.",

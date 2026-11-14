@@ -28,6 +28,7 @@ MANIFEST_KEYS = {
     "tags",
     "apps",
     "readingOrder",
+    "issuedCopies",
     "validFrom",
     "validUntil",
     "members",

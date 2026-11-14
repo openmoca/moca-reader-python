@@ -9,6 +9,24 @@ For moca-spec 0.7.0 ([moca-spec#5](https://github.com/openmoca/moca-spec/issues/
 [moca-spec#8](https://github.com/openmoca/moca-spec/issues/8) and
 [moca-spec#9](https://github.com/openmoca/moca-spec/issues/9)).
 
+### Added (attestations §3a and §7.1: issued copies)
+
+- Issued-copy attestations (`PREDICATE_ISSUED_COPY`, `issued_copy_statement`)
+  are verified first, with the trust-root role `issued-copy` (which needs
+  `ids`) and the publisher's consent in `issuedCopies`
+  (`moca_reader.issued_copy`). The Reader rebuilds the original digest
+  (`rebuilt_digest`), and package attestations are then checked against it.
+  Every failure is `A002`.
+- `PackageResult.issued_copy`: `{originalDigest, issuers, changedFiles}`.
+  Citation records carry `package.issuedCopy` and `node.issuedChange`;
+  reviews of changed files are listed with `fileChanged: true` and never
+  count, and such a copy is not `reviewed`.
+- `Library.add`: a second issued copy of the same original is
+  `L002_ISSUED_COPY_DUPLICATE` (info), not `L001`.
+- `package_state` carries `issuedCopy`, so a store search recomputes it.
+- `ed25519_key_bytes` compares keys as bytes. The manifest, trust-root and
+  citation-record schemas are copied from moca-spec.
+
 ### Added (package spec §4.10, Reader contract §9)
 
 - `PackageResult.reading_order` when the manifest's `readingOrder` names an

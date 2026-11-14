@@ -17,8 +17,9 @@ if TYPE_CHECKING:
 
 
 class _Review:
-    def __init__(self, outcome: str) -> None:
+    def __init__(self, outcome: str, file_changed: bool = False) -> None:
         self.outcome = outcome
+        self.file_changed = file_changed
 
 
 def package_state(result: PackageResult) -> dict[str, Any]:
@@ -38,6 +39,7 @@ def package_state(result: PackageResult) -> dict[str, Any]:
                 "outcome": r.outcome,
                 **({"signer": r.signer} if r.signer is not None else {}),
                 **({"scope": r.scope} if r.scope is not None else {}),
+                **({"fileChanged": True} if r.file_changed else {}),
             }
             for r in entries
         ]
@@ -56,6 +58,12 @@ def package_state(result: PackageResult) -> dict[str, Any]:
             "contests": contests,
         }
     )
+    if result.issued_copy is not None:
+        state["issuedCopy"] = {
+            "originalDigest": result.issued_copy["originalDigest"],
+            "issuers": list(result.issued_copy["issuers"]),
+            "changedFiles": list(result.issued_copy["changedFiles"]),
+        }
     if result._reading_order is not None:
         state["readingOrder"] = result._reading_order.to_state()
     return state
@@ -113,9 +121,20 @@ def refresh_record(
     signed = bool(state.get("signers"))
     reviews = (state.get("reviews") or {}).get(file, [])
     trust["attestedReviews"] = [{**r, "packageVerified": signed} for r in reviews]
-    trust["reviewStatus"] = review_status_of([_Review(r["outcome"]) for r in reviews], signed)
+    trust["reviewStatus"] = review_status_of(
+        [_Review(r["outcome"], r.get("fileChanged") is True) for r in reviews], signed
+    )
     package = {**record["package"], "signed": signed}
     package.pop("signers", None)
     if signed:
         package["signers"] = list(state["signers"])
-    return {**record, "package": package, "trust": trust}
+    # Attestations §7.1: whether the copy is bound to its publisher depends on the trust root, so it comes from the state.
+    issued = state.get("issuedCopy")
+    package.pop("issuedCopy", None)
+    node = {**record["node"]}
+    node.pop("issuedChange", None)
+    if isinstance(issued, dict):
+        package["issuedCopy"] = {"originalDigest": issued["originalDigest"], "issuers": list(issued["issuers"])}
+        if file in (issued.get("changedFiles") or []):
+            node["issuedChange"] = True
+    return {**record, "package": package, "node": node, "trust": trust}

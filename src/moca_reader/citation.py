@@ -111,6 +111,12 @@ def citation_for(
     }
     if result.signers:
         package["signers"] = list(result.signers)
+    # Attestations §7.1: an issued copy names its original digest and issuers.
+    if result.issued_copy is not None:
+        package["issuedCopy"] = {
+            "originalDigest": result.issued_copy["originalDigest"],
+            "issuers": list(result.issued_copy["issuers"]),
+        }
 
     node_part: dict[str, Any] = {
         "id": f"{js_string(manifest.get('id'))}#{node.path}",
@@ -130,6 +136,8 @@ def citation_for(
         node_part["tags"] = [x for x in fm["tags"] if isinstance(x, str)]
     if rep.sha256:
         node_part["digest"] = f"sha256:{rep.sha256}"
+    if result.issued_copy is not None and rep.file in result.issued_copy["changedFiles"]:
+        node_part["issuedChange"] = True
 
     verified = fm.get("verified")
     verified_list = verified if isinstance(verified, list) else [verified] if truthy(verified) else []
@@ -210,4 +218,6 @@ def _review_json(review: Any) -> dict[str, Any]:
         out["signer"] = review.signer
     if review.scope is not None:
         out["scope"] = review.scope
+    if getattr(review, "file_changed", False):
+        out["fileChanged"] = True
     return out
