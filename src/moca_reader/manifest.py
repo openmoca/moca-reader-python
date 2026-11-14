@@ -26,6 +26,7 @@ MANIFEST_KEYS = {
     "images",
     "translations",
     "tags",
+    "apps",
     "validFrom",
     "validUntil",
     "members",

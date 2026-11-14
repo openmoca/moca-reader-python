@@ -82,6 +82,8 @@ class PackageResult:
     images: list[dict[str, Any]] | None = None
     translations: dict[str, dict[str, Any]] | None = None
     tags: list[str] | None = None
+    # Package spec §4.9: as declared when the manifest passes its schema. Advice only; never fetched or opened.
+    apps: list[str] | None = None
     _catalogue: dict[str, Any] = field(default_factory=dict, repr=False)
     # Encrypted packages §5.3: for an envelope only; {"format", "opened"} and, unopened, the unverified "outline".
     envelope: dict[str, Any] | None = None
@@ -227,6 +229,8 @@ def _read(
     # Package spec §4.1: exposed and never acted on; "open" when absent.
     if not diagnostics.has("M002_MANIFEST_SCHEMA"):
         result.distribution = get(manifest, "distribution") or "open"
+        if isinstance(manifest.get("apps"), list):
+            result.apps = list(manifest["apps"])
         # Package spec §4.6-4.8: held aside, and exposed by _finish only when the package is valid.
         result._catalogue = check_catalogue(manifest, data, diagnostics, options.limits["maxImageBytes"])
     profiles = get(manifest, "profiles")

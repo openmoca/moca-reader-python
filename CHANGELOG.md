@@ -5,7 +5,14 @@ All notable changes to `moca-reader`. The format follows [Keep a Changelog](http
 ## [Unreleased]
 
 For moca-spec 0.7.0 ([moca-spec#5](https://github.com/openmoca/moca-spec/issues/5) and
-[moca-spec#7](https://github.com/openmoca/moca-spec/issues/7)).
+[moca-spec#7](https://github.com/openmoca/moca-spec/issues/7) and
+[moca-spec#8](https://github.com/openmoca/moca-spec/issues/8)).
+
+### Added (package spec §4.9)
+
+- `PackageResult.apps`, as declared, when the manifest passes its schema.
+  Advice only: the Reader never fetches, resolves or opens an app URI.
+  `apps` may be an outline property of an envelope.
 
 ### Added (package spec §4.6–4.8)
 
