@@ -29,14 +29,15 @@ COVER_COPIES = {"outline/cover.png": "image/png", "outline/cover.jpg": "image/jp
 _STORED = 0
 
 KeyProvider = Callable[[dict[str, Any]], Mapping[str, Any] | None]
-"""Encrypted packages §5.1. Given ``{"stanzas", "outline", "file"}``, returns ``{"identities": [...]}``,
-``{"passphrase": ...}``, ``{"file_key": bytes}``, or None."""
+"""Encrypted packages §5.1. Given ``{"stanzas", "outline", "file"}``, returns a mapping with one or more of
+``"identities"`` (a list of strings), ``"passphrase"`` and ``"file_key"`` (16 bytes; the spec's ``"fileKey"`` is
+accepted too), or None. It is synchronous, as ``read_package`` is: an awaitable result is refused (E001)."""
 
 
 class Decryptor(Protocol):
     def parse_header(self, data: bytes, max_scrypt_work_factor: int = 20) -> Any: ...
 
-    def decrypt(self, data: bytes, header: Any, key: Any, max_bytes: int | None = None) -> bytes: ...
+    def decrypt(self, data: bytes, header: Any, key: Any, max_bytes: int | None = None) -> bytes | bytearray: ...
 
 
 @dataclass(frozen=True)
@@ -134,15 +135,19 @@ def open_age_entry(
     decryptor: Decryptor | None,
     key_provider: KeyProvider | None,
     limits: Mapping[str, int],
-) -> tuple[bytes | None, str | None, str | None]:
+) -> tuple[bytes | bytearray | None, str | None, str | None]:
     """Steps 3-6 of encrypted packages §5.2 for one encrypted entry: (plaintext, code, message)."""
     lim = {**DEFAULT_LIMITS, **limits}
+    # Reader contract §3: the limit is an integer from 1 to 22; anything else is a host error.
+    wf = lim["maxScryptWorkFactor"]
+    if not isinstance(wf, int) or isinstance(wf, bool) or not 1 <= wf <= 22:
+        raise ValueError(f"limits['maxScryptWorkFactor'] must be an integer from 1 to 22, not {wf!r}")
     if decryptor is None:
         return None, "E001_ENCRYPTED_NO_KEY", "this Reader was not given a decryptor, so it does not open envelopes"
     try:
         header = decryptor.parse_header(data, lim["maxScryptWorkFactor"])
     except Exception as err:
-        return None, _code_of(err), f"{file}.age: {err}"
+        return _failure(err, file, "E006_AGE_HEADER_INVALID")
     if key_provider is None:
         return None, "E001_ENCRYPTED_NO_KEY", "the host supplied no key provider"
     request = {
@@ -154,21 +159,24 @@ def open_age_entry(
         # Encrypted packages §5.1: stanzas are data; the outline is unverified.
         key = key_provider(request)
     except Exception as err:
-        return None, "E001_ENCRYPTED_NO_KEY", f"the key provider failed: {err}"
-    if not key:
+        # Encrypted packages §5.1: never the provider's own message, which may carry a token or an address.
+        return None, "E001_ENCRYPTED_NO_KEY", f"the key provider failed ({type(err).__name__})"
+    if key is None:
         return None, "E001_ENCRYPTED_NO_KEY", "the key provider returned no key"
     try:
         return decryptor.decrypt(data, header, key, lim["maxBytes"]), None, None
     except Exception as err:
-        return None, _code_of(err), f"{file}.age: {err}"
+        return _failure(err, file, "E002_DECRYPTION_FAILED")
 
 
-def _code_of(err: Exception) -> str:
-    """A decryptor failure's code; anything else is a programmer error and is raised again."""
+def _failure(err: Exception, file: str, fallback: str) -> tuple[None, str, str]:
+    """Encrypted packages §5.1: nothing from opening an envelope is raised to the caller. A decryptor's own failure
+    maps to its code; anything else to the step's code, with its type name only. (Cancellation, KeyboardInterrupt
+    and other BaseExceptions are not caught.)"""
     code = _AGE_CODES.get(getattr(err, "kind", ""))
-    if code is None:
-        raise err
-    return code
+    if code is not None:
+        return None, code, f"{file}.age: {err}"
+    return None, fallback, f"{file}.age: the decryptor failed ({type(err).__name__})"
 
 
 def read_envelope(
@@ -180,7 +188,7 @@ def read_envelope(
     decryptor: Decryptor | None,
     key_provider: KeyProvider | None,
     limits: Mapping[str, int],
-    read_inner: Callable[[bytes, EnvelopeCheck], Any],
+    read_inner: Callable[[bytes | bytearray, EnvelopeCheck], Any],
     finish: Callable[[Any, Diagnostics], Any],
 ) -> Any:
     """Opens an envelope in the order of encrypted packages §5.2."""

@@ -9,6 +9,33 @@ For moca-spec 0.7.0 ([moca-spec#5](https://github.com/openmoca/moca-spec/issues/
 [moca-spec#8](https://github.com/openmoca/moca-spec/issues/8) and
 [moca-spec#9](https://github.com/openmoca/moca-spec/issues/9)).
 
+### Changed (encrypted packages: hardening)
+
+- Opening an envelope never raises to the caller (only `BaseException`s such
+  as cancellation do): an unexpected failure is `E006` while parsing the
+  header and `E002` after.
+- `limits["maxScryptWorkFactor"]` must be an integer from 1 to 22
+  (`ValueError` otherwise); `parse_header` refuses any other value too.
+- The key provider's result is checked (`moca_reader.age.check_key`): not a
+  mapping is `E001`; a member of the wrong type or a file key that is not 16
+  bytes is `E002`. The spec's `fileKey` is accepted as well as `file_key`.
+  The provider is synchronous, as `read_package` is: an awaitable result is
+  refused (`E001`). A result with several kinds is tried identities,
+  passphrase, then file key (`find_file_key`).
+- The plaintext length is computed from the payload length before any
+  decryption (`plaintext_length`: `T003` over `maxBytes`, `E003` when
+  impossible), and the payload is decrypted into one preallocated
+  `bytearray`, returned without a copy. The header is parsed from its first
+  64 KiB only.
+- A key provider's error message never appears in a diagnostic; only its type.
+- Key material and partial plaintext held in `bytearray`s are zeroed after
+  use (immutable `bytes` cannot be).
+- At most 256 recipient stanzas (`E006`).
+- Tests: the hybrid CCTV vectors run parse-only; provider results, including
+  an awaitable and `fileKey`; limits with a spy on scrypt; the header size;
+  the no-disk test also patches `os.open`; CI installs the Go age CLI and
+  requires it on Linux.
+
 ### Added (attestations §3a and §7.1: issued copies)
 
 - Issued-copy attestations (`PREDICATE_ISSUED_COPY`, `issued_copy_statement`)

@@ -12,11 +12,12 @@ from __future__ import annotations
 import base64
 import binascii
 import hmac
+import inspect
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from hashlib import sha256
-from typing import Any, Literal
+from typing import Literal
 
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives import hashes
@@ -36,6 +37,18 @@ _ARG = re.compile(r"[\x21-\x7e]+")
 _LINE = re.compile(rb"[\x20-\x7e]*")
 _WORK_FACTOR = re.compile(r"[1-9][0-9]?")
 _BECH32 = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
+MAX_STANZAS = 256
+"""Reader contract §3: the header holds at most this many stanzas (E006)."""
+SCRYPT_WORK_FACTOR_RANGE = (1, 22)
+"""Reader contract §3: ``maxScryptWorkFactor`` is an integer in this range."""
+DEFAULT_MAX_BYTES = 512 * 1024 * 1024
+"""The Reader's default ``maxBytes`` (Reader contract §3), used when this module is called directly."""
+
+
+def valid_work_factor_limit(limit: object) -> bool:
+    """Whether a work-factor limit is an integer in 1-22 (Reader contract §3). ``bool`` is not an integer here."""
+    return isinstance(limit, int) and not isinstance(limit, bool) and 1 <= limit <= 22
+
 
 AgeFailureKind = Literal["header", "noKey", "noMatch", "mac", "payload", "limit"]
 
@@ -73,6 +86,13 @@ class AgeKey:
     file_key: bytes | None = None
 
 
+def _wipe(*buffers: bytearray | None) -> None:
+    """Zeroes key material and partial plaintext held in a bytearray (F6); immutable bytes cannot be zeroed."""
+    for b in buffers:
+        if b is not None:
+            b[:] = bytes(len(b))
+
+
 def _decode_b64(text: str, what: str) -> bytes:
     """Canonical, unpadded standard base64: no padding, and unused bits zero."""
     if not _B64.fullmatch(text) or len(text) % 4 == 1:
@@ -90,13 +110,24 @@ def parse_header(data: bytes, max_scrypt_work_factor: int = 20) -> Header:
     """Parses an age v1 header strictly. Raises AgeError("header") on any deviation, an scrypt stanza that is not
     alone, a work factor over the limit, a malformed X25519 or scrypt stanza, a missing payload nonce, or a header
     over 64 KiB."""
+    # A limit outside 1-22 is refused, never read as "no limit".
+    if not valid_work_factor_limit(max_scrypt_work_factor):
+        raise AgeError(
+            "header", f"max_scrypt_work_factor must be an integer from 1 to 22, not {max_scrypt_work_factor!r}"
+        )
+    whole_length = len(data)
+    # The header is at most 64 KiB, so only that much is ever searched or parsed.
+    data = bytes(memoryview(data)[:MAX_HEADER_BYTES])
     pos = 0
 
     def line() -> tuple[str, int]:
         nonlocal pos
         end = data.find(b"\n", pos)
-        if end < 0 or end >= MAX_HEADER_BYTES:
-            raise AgeError("header", "the header is not terminated" if end < 0 else "the header is over 64 KiB")
+        if end < 0:
+            raise AgeError(
+                "header",
+                "the header is over 64 KiB" if whole_length > MAX_HEADER_BYTES else "the header is not terminated",
+            )
         raw = data[pos:end]
         if not _LINE.fullmatch(raw):
             raise AgeError("header", "the header has a character outside printable ASCII")
@@ -117,11 +148,13 @@ def parse_header(data: bytes, max_scrypt_work_factor: int = 20) -> Header:
                 raise AgeError("header", "the header has no recipient stanza")
             _check_stanzas(stanzas, max_scrypt_work_factor)
             # The 16-byte payload nonce counts as header for failure purposes, as the C2SP test kit does.
-            if len(data) - pos < 16:
+            if whole_length - pos < 16:
                 raise AgeError("header", "the payload nonce is missing or short")
             return Header(stanzas, data[: start + 3], mac, pos)
         if not text.startswith("-> "):
             raise AgeError("header", "expected a stanza or the MAC line")
+        if len(stanzas) >= MAX_STANZAS:
+            raise AgeError("header", f"the header has more than {MAX_STANZAS} stanzas")
         args = text[3:].split(" ")
         if not all(_ARG.fullmatch(a) for a in args):
             raise AgeError("header", "a stanza argument is empty or has a character outside %x21-7E")
@@ -213,10 +246,11 @@ def decode_identity(text: str) -> bytes | None:
     return bytes(out)
 
 
-def _unwrap_x25519(header: Header, identities: list[str]) -> bytes:
+def _unwrap_x25519(header: Header, identities: list[str]) -> bytearray | None:
+    """The file key an X25519 stanza unwraps with one of the identities, or None. A bad identity is noMatch (E002)."""
     keys = []
     for identity in identities:
-        scalar = decode_identity(identity)
+        scalar = decode_identity(identity) if isinstance(identity, str) else None
         if scalar is None:
             raise AgeError("noMatch", "an identity from the key provider is not a valid AGE-SECRET-KEY-1 identity")
         private = X25519PrivateKey.from_private_bytes(scalar)
@@ -236,70 +270,166 @@ def _unwrap_x25519(header: Header, identities: list[str]) -> bytes:
                 raise AgeError("header", "an X25519 share is a low-order point")
             file_key = _open(_hkdf(shared, share + recipient, b"age-encryption.org/v1/X25519"), _ZERO_NONCE, s.body)
             if file_key is not None and len(file_key) == 16:
-                return file_key
-    raise AgeError("noMatch", "no identity unwraps an X25519 stanza")
+                return bytearray(file_key)
+    return None
 
 
-def _unwrap_scrypt(stanza: Stanza, passphrase: str) -> bytes:
+def _unwrap_scrypt(stanza: Stanza, passphrase: str) -> bytearray | None:
+    """The file key the passphrase unwraps from the scrypt stanza, or None."""
     salt = b"age-encryption.org/v1/scrypt" + base64.b64decode(stanza.args[0] + "==")
-    key = Scrypt(salt=salt, length=32, n=2 ** int(stanza.args[1]), r=8, p=1).derive(passphrase.encode("utf-8"))
-    file_key = _open(key, _ZERO_NONCE, stanza.body)
-    if file_key is None or len(file_key) != 16:
-        raise AgeError("noMatch", "the passphrase does not unwrap the scrypt stanza")
-    return file_key
+    key = bytearray(
+        Scrypt(salt=salt, length=32, n=2 ** int(stanza.args[1]), r=8, p=1).derive(passphrase.encode("utf-8"))
+    )
+    try:
+        file_key = _open(bytes(key), _ZERO_NONCE, stanza.body)
+    finally:
+        _wipe(key)
+    return bytearray(file_key) if file_key is not None and len(file_key) == 16 else None
 
 
-def unwrap_file_key(header: Header, key: AgeKey | None) -> bytes:
-    """``noKey`` when the key is missing or of a kind no stanza uses; ``noMatch`` when it is the right kind but fails."""
-    if key is not None and key.file_key is not None:
-        if len(key.file_key) != 16:
-            raise AgeError("noMatch", "the file key from the key provider is not 16 bytes")
-        return key.file_key
-    if key is not None and key.identities:
-        if not any(s.type == "X25519" for s in header.stanzas):
-            raise AgeError("noKey", "the key provider returned identities, and the file has no X25519 stanza")
-        return _unwrap_x25519(header, key.identities)
-    if key is not None and key.passphrase is not None:
-        stanza = next((s for s in header.stanzas if s.type == "scrypt"), None)
-        if stanza is None:
-            raise AgeError("noKey", "the key provider returned a passphrase, and the file has no scrypt stanza")
-        return _unwrap_scrypt(stanza, key.passphrase)
-    raise AgeError("noKey", "the key provider returned no key")
+def check_key(key: object) -> AgeKey:
+    """Checks what the key provider returned (encrypted packages §5.1). Not a mapping (or an AgeKey): noKey (E001).
+    A member of the wrong type, or a file key that is not 16 bytes: noMatch (E002). ``file_key`` and the spec's
+    ``fileKey`` are both accepted; an awaitable is refused (this binding's provider is synchronous)."""
+    if isinstance(key, AgeKey):
+        return key
+    if inspect.isawaitable(key):
+        if hasattr(key, "close"):
+            key.close()  # a coroutine that is never awaited
+        raise AgeError("noKey", "the key provider returned an awaitable; this binding takes a synchronous provider")
+    if not isinstance(key, Mapping):
+        raise AgeError("noKey", "the key provider returned no key")
+    identities = key.get("identities")
+    passphrase = key.get("passphrase")
+    file_key = key.get("file_key", key.get("fileKey"))
+    if identities is not None and (
+        not isinstance(identities, (list, tuple)) or not all(isinstance(i, str) for i in identities)
+    ):
+        raise AgeError("noMatch", "the key provider returned identities that are not a list of strings")
+    if passphrase is not None and not isinstance(passphrase, str):
+        raise AgeError("noMatch", "the key provider returned a passphrase that is not a string")
+    if file_key is not None and not isinstance(file_key, (bytes, bytearray, memoryview)):
+        raise AgeError("noMatch", "the key provider returned a file key that is not bytes")
+    return AgeKey(
+        identities=list(identities or []),
+        passphrase=passphrase,
+        file_key=bytes(file_key) if file_key is not None else None,
+    )
 
 
-def verify_mac(header: Header, file_key: bytes) -> None:
+def _mac_ok(header: Header, file_key: bytes | bytearray) -> bool:
+    mac = hmac.new(_hkdf(bytes(file_key), b"", b"header"), header.header_no_mac, sha256).digest()
+    return hmac.compare_digest(mac, header.mac)
+
+
+def find_file_key(header: Header, key: object) -> bytearray:
+    """Finds the file key and verifies the header MAC with it (encrypted packages §5.1, §5.2 steps 4-5). A key's
+    kinds are tried in order: identities, then the passphrase, then the file key; the first whose file key verifies
+    the MAC wins. ``noKey`` when no kind the key has is one the file uses; ``noMatch`` or ``mac`` when one was tried
+    and failed. The caller zeroes the returned key."""
+    k = check_key(key)
+    if k.file_key is not None and len(k.file_key) != 16:
+        raise AgeError("noMatch", "the file key from the key provider is not 16 bytes")
+    tried = False
+    mac_failed = False
+
+    def accept(file_key: bytearray | None) -> bytearray | None:
+        nonlocal mac_failed
+        if file_key is None:
+            return None
+        if _mac_ok(header, file_key):
+            return file_key
+        mac_failed = True
+        _wipe(file_key)
+        return None
+
+    if k.identities and any(s.type == "X25519" for s in header.stanzas):
+        tried = True
+        found = accept(_unwrap_x25519(header, k.identities))
+        if found is not None:
+            return found
+    stanza = next((s for s in header.stanzas if s.type == "scrypt"), None)
+    if k.passphrase is not None and stanza is not None:
+        tried = True
+        found = accept(_unwrap_scrypt(stanza, k.passphrase))
+        if found is not None:
+            return found
+    if k.file_key is not None:
+        tried = True
+        found = accept(bytearray(k.file_key))
+        if found is not None:
+            return found
+    if not tried:
+        raise AgeError(
+            "noKey",
+            "the key provider returned keys of kinds no stanza in the file uses"
+            if k.identities or k.passphrase is not None
+            else "the key provider returned no key",
+        )
+    if mac_failed:
+        raise AgeError("mac", "the header MAC does not verify")
+    raise AgeError("noMatch", "no key from the key provider unwraps a stanza")
+
+
+def verify_mac(header: Header, file_key: bytes | bytearray) -> None:
     """Verifies the header MAC with a constant-time compare."""
-    mac = hmac.new(_hkdf(file_key, b"", b"header"), header.header_no_mac, sha256).digest()
-    if not hmac.compare_digest(mac, header.mac):
+    if not _mac_ok(header, file_key):
         raise AgeError("mac", "the header MAC does not verify")
 
 
-def decrypt_payload(data: bytes, header: Header, file_key: bytes, max_bytes: int | None = None) -> bytes:
-    """Decrypts and authenticates the whole STREAM payload; returns nothing until every chunk has authenticated."""
-    key = _hkdf(file_key, data[header.payload_start : header.payload_start + 16], b"payload")
-    out = bytearray()
-    pos = header.payload_start + 16
+def plaintext_length(ciphertext_length: int, max_bytes: int) -> int:
+    """The plaintext length of a STREAM payload, from its length alone (encrypted packages §5.2 step 6): every chunk
+    but the last is 64 KiB + 16, and the last is 16 to 64 KiB + 16. ``payload`` for a length no payload can have;
+    ``limit`` over ``max_bytes``; both before any decryption."""
+    full = CHUNK + TAG
+    chunks = max(1, -(-ciphertext_length // full))
+    last = ciphertext_length - (chunks - 1) * full
+    if last < TAG or (last == TAG and chunks > 1):
+        raise AgeError(
+            "payload", "the payload length is impossible: the final chunk is missing, short or empty after a full chunk"
+        )
+    length = ciphertext_length - chunks * TAG
+    if length > max_bytes:
+        raise AgeError("limit", f"the decrypted payload would be {length} bytes, over {max_bytes}")
+    return length
+
+
+def decrypt_payload(
+    data: bytes, header: Header, file_key: bytes | bytearray, max_bytes: int | None = None
+) -> bytearray:
+    """Decrypts and authenticates the whole STREAM payload into one buffer of the exact size, computed first.
+    Returns nothing until every chunk has authenticated; on failure the partial plaintext is zeroed."""
+    start = header.payload_start + 16
+    view = memoryview(data)
+    out = bytearray(plaintext_length(len(data) - start, DEFAULT_MAX_BYTES if max_bytes is None else max_bytes))
+    key = bytearray(_hkdf(bytes(file_key), bytes(view[header.payload_start : start]), b"payload"))
+    aead = ChaCha20Poly1305(bytes(key))
+    _wipe(key)
+    pos = start
+    written = 0
     counter = 0
-    while True:
-        last = len(data) - pos <= CHUNK + TAG
-        sealed = data[pos:] if last else data[pos : pos + CHUNK + TAG]
-        plain = _open(key, counter.to_bytes(11, "big") + (b"\x01" if last else b"\x00"), sealed)
-        if plain is None:
-            raise AgeError(
-                "payload",
-                "the final chunk does not authenticate, or is missing"
-                if last
-                else f"chunk {counter} does not authenticate",
-            )
-        if last and not plain and counter > 0:
-            raise AgeError("payload", "an empty final chunk follows a full chunk")
-        if max_bytes is not None and len(out) + len(plain) > max_bytes:
-            raise AgeError("limit", f"the decrypted payload is over {max_bytes} bytes")
-        out += plain
-        if last:
-            return bytes(out)
-        pos += CHUNK + TAG
-        counter += 1
+    try:
+        while True:
+            last = len(data) - pos <= CHUNK + TAG
+            sealed = view[pos:] if last else view[pos : pos + CHUNK + TAG]
+            try:
+                plain = aead.decrypt(counter.to_bytes(11, "big") + (b"\x01" if last else b"\x00"), sealed, None)
+            except InvalidTag:
+                raise AgeError(
+                    "payload",
+                    "the final chunk does not authenticate, or is missing"
+                    if last
+                    else f"chunk {counter} does not authenticate",
+                ) from None
+            out[written : written + len(plain)] = plain
+            written += len(plain)
+            if last:
+                return out
+            pos += CHUNK + TAG
+            counter += 1
+    except BaseException:
+        _wipe(out)
+        raise
 
 
 class AgeDecryptor:
@@ -310,19 +440,14 @@ class AgeDecryptor:
         return parse_header(data, max_scrypt_work_factor)
 
     @staticmethod
-    def decrypt(
-        data: bytes, header: Header, key: AgeKey | Mapping[str, Any] | None, max_bytes: int | None = None
-    ) -> bytes:
-        """``key`` is an AgeKey, or what a key provider returns: ``{"identities"}``, ``{"passphrase"}`` or ``{"file_key"}``."""
-        if isinstance(key, Mapping):
-            key = AgeKey(
-                identities=list(key.get("identities") or []),
-                passphrase=key.get("passphrase"),
-                file_key=key.get("file_key"),
-            )
-        file_key = unwrap_file_key(header, key)
-        verify_mac(header, file_key)
-        return decrypt_payload(data, header, file_key, max_bytes)
+    def decrypt(data: bytes, header: Header, key: object, max_bytes: int | None = None) -> bytearray:
+        """``key`` is an AgeKey, or what a key provider returns: a mapping with ``identities``, ``passphrase`` and
+        ``file_key`` (or the spec's ``fileKey``), one or more of them. ``max_bytes`` defaults to the Reader's default."""
+        file_key = find_file_key(header, key)
+        try:
+            return decrypt_payload(data, header, file_key, max_bytes)
+        finally:
+            _wipe(file_key)
 
 
 AGE_DECRYPTOR = AgeDecryptor()

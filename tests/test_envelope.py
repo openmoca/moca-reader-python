@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import os
 import re
 import shutil
 import subprocess
@@ -110,6 +111,14 @@ def test_opens_without_writing_any_file(monkeypatch: pytest.MonkeyPatch) -> None
         return real_open(file, mode, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "open", read_only_open)
+    real_os_open = os.open
+
+    def read_only_os_open(path: Any, flags: int, *args: Any, **kwargs: Any) -> int:
+        if flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_APPEND | os.O_TRUNC):
+            raise AssertionError(f"the Reader tried to write {path}")
+        return real_os_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", read_only_os_open)
     r = read_package(ENVELOPES / "large.moca.enc", **with_key(TEST_KEY))
     assert r.valid
     assert r.envelope is not None and r.envelope["opened"] is True
@@ -143,3 +152,62 @@ def test_index_age_binds_through_the_key_provider(tmp_path: Path) -> None:
     assert not wrong.usable
     assert [d.code for d in wrong.diagnostics] == ["E002_DECRYPTION_FAILED"]
     assert pkg.valid
+
+
+def test_a_key_provider_error_never_reaches_a_diagnostic() -> None:
+    def provider(_request: Any) -> Any:
+        raise RuntimeError("vault https://vault.example/v1?token=s3cret is offline")
+
+    r = read_package(ENVELOPES / "x25519.moca.enc", decryptor=AGE_DECRYPTOR, key_provider=provider)
+    [d] = r.diagnostics
+    assert d.code == "E001_ENCRYPTED_NO_KEY"
+    assert "s3cret" not in d.message and "vault.example" not in d.message
+    assert "RuntimeError" in d.message
+
+
+class _Boom:
+    def __init__(self, in_parse: bool) -> None:
+        self.in_parse = in_parse
+
+    def parse_header(self, data: bytes, max_scrypt_work_factor: int = 20) -> Any:
+        if self.in_parse:
+            raise IndexError("internal")
+        return AGE_DECRYPTOR.parse_header(data, max_scrypt_work_factor)
+
+    def decrypt(self, data: bytes, header: Any, key: Any, max_bytes: int | None = None) -> bytes:
+        raise TypeError("internal")
+
+
+def test_nothing_a_decryptor_raises_reaches_the_caller() -> None:
+    key = with_key(TEST_KEY)["key_provider"]
+    r = read_package(ENVELOPES / "x25519.moca.enc", decryptor=_Boom(True), key_provider=key)
+    assert [d.code for d in r.diagnostics] == ["E006_AGE_HEADER_INVALID"]
+    r = read_package(ENVELOPES / "x25519.moca.enc", decryptor=_Boom(False), key_provider=key)
+    assert [d.code for d in r.diagnostics] == ["E002_DECRYPTION_FAILED"]
+    for result, code in (
+        (42, "E001_ENCRYPTED_NO_KEY"),
+        ([], "E001_ENCRYPTED_NO_KEY"),
+        ({"identities": [7]}, "E002_DECRYPTION_FAILED"),
+        ({"fileKey": [1, 2]}, "E002_DECRYPTION_FAILED"),
+    ):
+        r = read_package(ENVELOPES / "x25519.moca.enc", decryptor=AGE_DECRYPTOR, key_provider=lambda _r, v=result: v)
+        assert [d.code for d in r.diagnostics] == [code], result
+
+
+def test_a_work_factor_limit_outside_1_to_22_is_a_host_error() -> None:
+    for bad in (float("nan"), 40, 0):
+        with pytest.raises(ValueError):
+            read_package(ENVELOPES / "x25519.moca.enc", limits={"maxScryptWorkFactor": bad}, **with_key(TEST_KEY))  # type: ignore[dict-item]
+
+
+def test_file_key_by_either_name() -> None:
+    """Encrypted packages §5.1: a binding may use its own names (``file_key``) and also accepts the spec's (``fileKey``)."""
+    from moca_reader.age import find_file_key
+
+    header = AGE_DECRYPTOR.parse_header(zipfile.ZipFile(ENVELOPES / "x25519.moca.enc").read("package.age"))
+    key = find_file_key(header, {"identities": identities_in(TEST_KEY)})
+    for name in ("file_key", "fileKey"):
+        r = read_package(
+            ENVELOPES / "x25519.moca.enc", decryptor=AGE_DECRYPTOR, key_provider=lambda _r, n=name: {n: bytes(key)}
+        )
+        assert r.valid, name
