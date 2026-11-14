@@ -28,7 +28,7 @@ from .content import ContentNode, read_content
 from .diagnostics import Diagnostic, Diagnostics
 from .digest import ATTESTATIONS_DIR, MANIFEST, compute_digest, package_files
 from .envelope import Decryptor, EnvelopeCheck, KeyProvider, is_envelope, outline_mismatch, read_envelope
-from .manifest import check_manifest
+from .manifest import check_catalogue, check_manifest
 from .profiles import KNOWN_PROFILES
 from .reviews import review_status_of
 from .source import DEFAULT_LIMITS, PackageSource, TargetError, open_source
@@ -78,6 +78,11 @@ class PackageResult:
     capabilities: list[str] = field(default_factory=list)
     # Package spec §4.1: the publisher's intent, a label only. None when the manifest fails its schema.
     distribution: str | None = None
+    # Package spec §4.6-4.8: set when the package is valid and the manifest has them.
+    images: list[dict[str, Any]] | None = None
+    translations: dict[str, dict[str, Any]] | None = None
+    tags: list[str] | None = None
+    _catalogue: dict[str, Any] = field(default_factory=dict, repr=False)
     # Encrypted packages §5.3: for an envelope only; {"format", "opened"} and, unopened, the unverified "outline".
     envelope: dict[str, Any] | None = None
     payload_manifest: str | None = None
@@ -214,7 +219,7 @@ def _read(
         return _finish(result, diagnostics)
     result.manifest = manifest
     if envelope_check is not None:
-        why = outline_mismatch(envelope_check, manifest, data)
+        why = outline_mismatch(envelope_check, manifest, data, options.limits["maxImageBytes"])
         if why:
             diagnostics.add("E004_OUTLINE_MISMATCH", why, MANIFEST)
             return _finish(result, diagnostics)
@@ -222,6 +227,8 @@ def _read(
     # Package spec §4.1: exposed and never acted on; "open" when absent.
     if not diagnostics.has("M002_MANIFEST_SCHEMA"):
         result.distribution = get(manifest, "distribution") or "open"
+        # Package spec §4.6-4.8: held aside, and exposed by _finish only when the package is valid.
+        result._catalogue = check_catalogue(manifest, data, diagnostics, options.limits["maxImageBytes"])
     profiles = get(manifest, "profiles")
     result.profiles = list(profiles) if isinstance(profiles, dict) else []
     version = get(manifest, "mocaVersion")
@@ -474,6 +481,9 @@ def _finish(result: PackageResult, diagnostics: Diagnostics) -> PackageResult:
     result.valid = not any(d.severity == "error" and _INVALIDATING.match(d.code) for d in diagnostics.items)
     if not result.valid:
         return result
+    result.images = result._catalogue.get("images")
+    result.translations = result._catalogue.get("translations")
+    result.tags = result._catalogue.get("tags")
     caps = {"core"}
     all_local = True
     reviewed_files = 0

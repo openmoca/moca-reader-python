@@ -280,6 +280,9 @@ def actual_for(root: str, c: dict[str, Any]) -> dict[str, Any]:
         "capabilities": result.capabilities,
         "digest": result.digest,
         "distribution": result.distribution,
+        "images": result.images,
+        "translations": result.translations,
+        "tags": result.tags,
         "evidenceMatched": evidence_matched,
         "envelope": result.envelope,
     }

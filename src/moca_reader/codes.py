@@ -32,6 +32,16 @@ CODES: dict[str, tuple[str, str]] = {
         WARNING,
         "The package was written for a newer mocaVersion than this Reader implements; it is read on a best-effort basis.",
     ),
+    "M010_IMAGE_INVALID": (
+        WARNING,
+        "A manifest image is missing, over maxImageBytes, or does not start with the signature of its type. It is left out of the result.",
+    ),
+    "M011_TRANSLATION_LOCALE_UNDECLARED": (ERROR, "A key of translations is not a tag in locales."),
+    "M012_TAG_DUPLICATE": (
+        WARNING,
+        "Two tags in one list are equal, compared case-insensitively. The repeat is dropped.",
+    ),
+    "M013_ALT_IMAGE_UNKNOWN": (WARNING, "A translated alt text names no image in images. It is dropped."),
     "C001_FRONTMATTER_MISSING": (ERROR, "A concept document has no YAML frontmatter (OKF MUST)."),
     "C002_FRONTMATTER_INVALID": (ERROR, "Frontmatter is not parseable YAML or is not a mapping."),
     "C003_TYPE_MISSING": (ERROR, "Frontmatter has no non-empty type (OKF MUST)."),

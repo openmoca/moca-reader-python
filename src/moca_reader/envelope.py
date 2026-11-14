@@ -8,12 +8,14 @@ is reported with E001 after its entries are checked. Maps one-to-one onto the re
 from __future__ import annotations
 
 import copy
+import unicodedata
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
 
 from ._js import json_loads
 from .diagnostics import Diagnostics
+from .manifest import image_problem
 from .schemas import validate_against
 from .source import DEFAULT_LIMITS, PackageSource
 
@@ -22,6 +24,8 @@ PACKAGE_AGE = "package.age"
 INDEX_AGE = "index.age"
 STRUCTURE_COPY = "outline/structure.ttl"
 _ALLOWED = {MARKER, PACKAGE_AGE, STRUCTURE_COPY, INDEX_AGE}
+# Encrypted packages §3: the opt-in cover copy, by name, and the type its extension gives.
+COVER_COPIES = {"outline/cover.png": "image/png", "outline/cover.jpg": "image/jpeg", "outline/cover.webp": "image/webp"}
 _STORED = 0
 
 KeyProvider = Callable[[dict[str, Any]], Mapping[str, Any] | None]
@@ -41,6 +45,7 @@ class EnvelopeCheck:
 
     outline: dict[str, Any] | None
     structure: bytes | None
+    cover: tuple[str, bytes] | None = None
 
 
 _AGE_CODES = {
@@ -83,7 +88,12 @@ def json_equal(a: Any, b: Any) -> bool:
     return type(a) is type(b) and a == b
 
 
-def outline_mismatch(check: EnvelopeCheck, manifest: Any, data: Mapping[str, bytes]) -> str | None:
+def outline_mismatch(
+    check: EnvelopeCheck,
+    manifest: Any,
+    data: Mapping[str, bytes],
+    max_image_bytes: int = DEFAULT_LIMITS["maxImageBytes"],
+) -> str | None:
     """The outline check (encrypted packages §3); None when it passes."""
     for key, value in (check.outline or {}).items():
         if not isinstance(manifest, dict) or key not in manifest:
@@ -96,6 +106,24 @@ def outline_mismatch(check: EnvelopeCheck, manifest: Any, data: Mapping[str, byt
             return "the envelope has a structure copy, and the package has no structure.ttl"
         if inner != check.structure:
             return "the structure copy differs from structure.ttl"
+    if check.cover is not None:
+        name, copy_bytes = check.cover
+        # The first images entry with role cover, which must pass its checks (package spec §4.6).
+        images = manifest.get("images") if isinstance(manifest, dict) else None
+        cover = (
+            next((i for i in images if isinstance(i, dict) and i.get("role") == "cover"), None)
+            if isinstance(images, list)
+            else None
+        )
+        if cover is None or not isinstance(cover.get("src"), str) or not isinstance(cover.get("type"), str):
+            return "the envelope has a cover copy, and the manifest has no cover image"
+        problem = image_problem(cover["src"], cover["type"], data, max_image_bytes)
+        if problem:
+            return f"the envelope has a cover copy, and the manifest's cover fails its checks: {problem}"
+        if COVER_COPIES[name] != cover["type"]:
+            return f"the cover copy {name} does not match the cover's type {cover['type']}"
+        if data[unicodedata.normalize("NFC", cover["src"])] != copy_bytes:
+            return f"the cover copy differs from {cover['src']}"
     return None
 
 
@@ -175,10 +203,17 @@ def read_envelope(
     if source.hidden_entries:
         return fail("E005_ENVELOPE_INVALID", f'an envelope may not have a hidden entry: "{source.hidden_entries[0]}"')
     for path in files:
-        if path not in _ALLOWED:
+        if path not in _ALLOWED and path not in COVER_COPIES:
             return fail("E005_ENVELOPE_INVALID", f'an envelope may not have the entry "{path}"', path)
     if PACKAGE_AGE not in files:
         return fail("E005_ENVELOPE_INVALID", "the envelope has no package.age")
+    covers = [name for name in COVER_COPIES if name in files]
+    if len(covers) > 1:
+        return fail(
+            "E005_ENVELOPE_INVALID",
+            f"an envelope has at most one cover copy, and this one has {', '.join(covers)}",
+            covers[1],
+        )
     methods = {e.path: e.method for e in source.list()}
     for name in (PACKAGE_AGE, INDEX_AGE):
         if name in files and methods.get(files[name]) != _STORED:
@@ -192,6 +227,14 @@ def read_envelope(
 
     # Steps 3-6.
     structure = source.read(files[STRUCTURE_COPY]) if STRUCTURE_COPY in files else None
+    cover = (covers[0], source.read(files[covers[0]])) if covers else None
+    max_image_bytes = {**DEFAULT_LIMITS, **limits}["maxImageBytes"]
+    if cover is not None and len(cover[1]) > max_image_bytes:
+        return fail(
+            "E005_ENVELOPE_INVALID",
+            f"{cover[0]} is {len(cover[1])} bytes, over the limit of {max_image_bytes}",
+            cover[0],
+        )
     plain, code, message = open_age_entry(
         source.read(files[PACKAGE_AGE]), "package", outline, decryptor, key_provider, limits
     )
@@ -200,7 +243,7 @@ def read_envelope(
         return fail(code, message, PACKAGE_AGE)
 
     # Steps 7-10, with the outline check (step 8) right after the inner manifest is read.
-    inner = read_inner(plain, EnvelopeCheck(outline, structure))
+    inner = read_inner(plain, EnvelopeCheck(outline, structure, cover))
     failed = inner.manifest is None or any(
         d.severity == "error" and (d.code[0] in "TP" or d.code == "E004_OUTLINE_MISMATCH") for d in inner.diagnostics
     )
