@@ -6,6 +6,17 @@ All notable changes to `moca-reader`. The format follows [Keep a Changelog](http
 
 For moca-spec 0.7.0 ([moca-spec#5](https://github.com/openmoca/moca-spec/issues/5)).
 
+### Added (encrypted packages §4)
+
+- `moca_reader.age`: decrypt-only age v1 on `cryptography`, already a
+  dependency (not pyrage, which has no file-key hook). X25519 and scrypt
+  recipients, no plugins, no armor. Strict header parsing (64 KiB cap,
+  canonical base64, scrypt alone, work-factor limit checked before scrypt
+  runs, low-order shares refused), constant-time compares, and no plaintext
+  before the whole payload authenticates. The core never imports it.
+  Tested against every applicable C2SP age test vector and against the Go
+  age CLI on moca-spec's envelope fixtures.
+
 ### Added (package spec §4.1)
 
 - `PackageResult.distribution`: the manifest's `distribution`, or `open`
