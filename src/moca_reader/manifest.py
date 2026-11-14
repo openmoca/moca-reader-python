@@ -21,6 +21,7 @@ MANIFEST_KEYS = {
     "locales",
     "license",
     "publisher",
+    "distribution",
     "validFrom",
     "validUntil",
     "members",

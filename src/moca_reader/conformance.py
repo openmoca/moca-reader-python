@@ -237,6 +237,7 @@ def actual_for(root: str, c: dict[str, Any]) -> dict[str, Any]:
         "codes": codes,
         "capabilities": result.capabilities,
         "digest": result.digest,
+        "distribution": result.distribution,
         "evidenceMatched": evidence_matched,
     }
     if sidecar_usable is not None:

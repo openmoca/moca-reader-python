@@ -75,6 +75,8 @@ class PackageResult:
     diagnostics: list[Diagnostic] = field(default_factory=list)
     valid: bool = False
     capabilities: list[str] = field(default_factory=list)
+    # Package spec §4.1: the publisher's intent, a label only. None when the manifest fails its schema.
+    distribution: str | None = None
     payload_manifest: str | None = None
     structure: PackageStructure | None = None
     source: PackageSource | None = None
@@ -184,6 +186,9 @@ def _read(target: Any, options: _Options, stack: list[Any], budget: list[int]) -
         return _finish(result, diagnostics)
     result.manifest = manifest
     check_manifest(manifest, diagnostics, options.known_profiles)
+    # Package spec §4.1: exposed and never acted on; "open" when absent.
+    if not diagnostics.has("M002_MANIFEST_SCHEMA"):
+        result.distribution = get(manifest, "distribution") or "open"
     profiles = get(manifest, "profiles")
     result.profiles = list(profiles) if isinstance(profiles, dict) else []
     version = get(manifest, "mocaVersion")

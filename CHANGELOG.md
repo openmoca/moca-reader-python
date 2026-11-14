@@ -2,6 +2,15 @@
 
 All notable changes to `moca-reader`. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+For moca-spec 0.7.0 ([moca-spec#5](https://github.com/openmoca/moca-spec/issues/5)).
+
+### Added (package spec §4.1)
+
+- `PackageResult.distribution`: the manifest's `distribution`, or `open`
+  when it has none; `None` when the manifest fails its schema. A label only.
+
 ## [0.6.0] - 2026-11-11
 
 ### Added (Sigstore, offline)
