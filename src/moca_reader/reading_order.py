@@ -61,9 +61,10 @@ def resolve_reading_order(graph: StructureGraph | None, iri: str) -> ReadingOrde
 
 
 def passes_up_to(record: dict[str, Any], order: ReadingOrder | None, up_to: str) -> bool:
-    """Contract §9: whether a record passes upTo. A package whose reading order does not have it as a member is not
-    limited, nor is a record bound to no concept on it."""
-    if order is None or up_to not in order.members or up_to not in order.positions:
+    """Contract §9: whether a record passes upTo. It is placed as any concept is, so a descendant limits as the first
+    member that contains it. A package whose reading order does not place it is not limited, nor is a record bound to
+    no concept on it."""
+    if order is None or up_to not in order.positions:
         return True
     limit = order.positions[up_to]
     return all(c not in order.positions or order.positions[c] <= limit for c in record.get("concepts") or [])

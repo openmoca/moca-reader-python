@@ -70,3 +70,14 @@ def test_a_package_state_carries_the_reading_order_and_a_store_search_with_pushd
     # With pushdown the Reader would fetch only the limit; upTo has no pushdown filter, so it must fetch more.
     records = Search(StoreScope([state]), store).search("text", limit=2, up_to=f"{B}A")
     assert sorted(x["node"]["path"] for x in records) == ["a.md", "p.md"]
+
+
+def test_s008_is_reported_for_the_latest_search_only(tmp_path: Path) -> None:
+    ttl = "c:A a skos:Concept .\nc:Path a skos:OrderedCollection ; skos:memberList ( c:A ) .\n"
+    r = read_package(make_package(tmp_path, ttl, {"a.md": node("A")}))
+    library = Library().add(r)
+    search = Search(library, LexicalBackend(library))
+    search.search("text", up_to=f"{B}Nowhere")
+    assert [d.code for d in search.diagnostics] == ["S008_UPTO_UNRESOLVED"]
+    search.search("text", up_to=f"{B}A")
+    assert search.diagnostics == []

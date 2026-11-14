@@ -219,12 +219,14 @@ def actual_for(root: str, c: dict[str, Any]) -> dict[str, Any]:
                 for p in library.packages
                 if p.result.source and p.result.source.location in allow
             ]
-            records = Search(
+            store_search = Search(
                 StoreScope(allowed, lambda: now, o.get("allowUnsignedRelations") is True),
                 store,
                 audiences=o.get("audiences"),
                 allow_unlabelled=o.get("allowUnlabelled") is True,
-            ).search(s["query"], **options)
+            )
+            records = store_search.search(s["query"], **options)
+            codes.extend(d.code for d in store_search.diagnostics)
             return {"codes": codes, "records": records}
 
         def dense() -> DenseBackend:
@@ -243,13 +245,16 @@ def actual_for(root: str, c: dict[str, Any]) -> dict[str, Any]:
         codes.extend(d.code for d in getattr(backend, "diagnostics", None) or [])
         # Library diagnostics (L): for example two digests for one id@version.
         codes.extend(d.code for d in library.diagnostics.items if d.code.startswith("L"))
-        records = Search(
+        search = Search(
             library,
             backend,
             audiences=o.get("audiences"),
             hooks=hooks,
             allow_unlabelled=o.get("allowUnlabelled") is True,
-        ).search(s["query"], **options)
+        )
+        records = search.search(s["query"], **options)
+        # Contract §9: the search's own findings, such as S008.
+        codes.extend(d.code for d in search.diagnostics)
         return {"codes": codes, "records": records}
 
     result = read_package(os.path.join(root, c["target"]), **read_options)

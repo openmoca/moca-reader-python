@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from ._js import js_string, timestamp, truthy
 from .audience import record_allowed
 from .citation import CitationRecord, RelationIndex, citation_for, passes_default_policy, pick_representation
+from .diagnostics import Diagnostic, Diagnostics
 from .digest import utf8
 from .reading_order import ReadingOrder, passes_up_to
 from .state import refresh_record, state_index
@@ -136,6 +137,8 @@ class Search:
         self.allow_unlabelled = allow_unlabelled is True
         self.overfetch = overfetch
         self.hooks = hooks or SearchHooks()
+        # The findings of the latest search() call, such as S008 (Reader interface §5.1).
+        self.diagnostics: list[Diagnostic] = []
 
     def search(
         self,
@@ -186,6 +189,17 @@ class Search:
         )
         request = dict(caller)
         loaded = {p.result.digest: p.result for p in self.library.packages} if self.library else {}
+        findings = Diagnostics()
+        # Contract §9: an upTo that no loaded reading order places limits nothing, and never silently.
+        if isinstance(up_to, str):
+            digests = list(loaded) if self.library else list(self.states or {})
+            if not any(
+                (order := self._reading_order(d, loaded)) is not None and up_to in order.positions for d in digests
+            ):
+                findings.add(
+                    "S008_UPTO_UNRESOLVED", f"upTo {up_to} is on no loaded package's reading order; it limits nothing"
+                )
+        self.diagnostics = findings.items
         hook_context = HookContext(
             MappingProxyType(request),
             self.library,
@@ -314,7 +328,7 @@ class Search:
             out.sort(key=lambda r: -(r.get("score") or 0))
         return out[: request["limit"]]
 
-    def _reading_order(self, digest: Any, loaded: dict[str, PackageResult]) -> ReadingOrder | None:
+    def _reading_order(self, digest: Any, loaded: dict[Any, PackageResult]) -> ReadingOrder | None:
         if self.library:
             result = loaded.get(digest)
             return result._reading_order if result is not None else None

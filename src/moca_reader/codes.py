@@ -129,6 +129,11 @@ CODES: dict[str, tuple[str, str]] = {
         WARNING,
         "A loaded package has no vectors a dense backend can search; that package is not searched.",
     ),
+    "S008_UPTO_UNRESOLVED": (
+        WARNING,
+        "A search's upTo is on no loaded package's reading order, neither a member nor a descendant of one. "
+        "It limits nothing.",
+    ),
 }
 
 # Codes that are no longer emitted. Codes are never reused.
