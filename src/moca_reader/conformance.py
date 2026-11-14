@@ -30,6 +30,7 @@ from . import (
     read_package,
 )
 from .age import AGE_DECRYPTOR
+from .envelope import bind_envelope_sidecar
 from .state import package_state
 
 
@@ -253,6 +254,17 @@ def actual_for(root: str, c: dict[str, Any]) -> dict[str, Any]:
     result = read_package(os.path.join(root, c["target"]), **read_options)
     codes = [d.code for d in result.diagnostics]
     sidecar_usable = None
+    # Encrypted packages §6: the envelope's own index.age, through the same key provider.
+    if o.get("envelopeSidecar"):
+        env_bound = bind_envelope_sidecar(
+            os.path.join(root, c["target"]),
+            result,
+            decryptor=read_options["decryptor"],
+            key_provider=read_options["key_provider"],
+            limits=read_options["limits"],
+        )
+        codes.extend(d.code for d in env_bound.diagnostics)
+        sidecar_usable = env_bound.usable
     if o.get("sidecar"):
         bound = bind_sidecar(os.path.join(root, o["sidecar"]), result)
         codes.extend(d.code for d in bound.diagnostics)
