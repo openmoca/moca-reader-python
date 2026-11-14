@@ -30,6 +30,7 @@ from .digest import ATTESTATIONS_DIR, MANIFEST, compute_digest, package_files
 from .envelope import Decryptor, EnvelopeCheck, KeyProvider, is_envelope, outline_mismatch, read_envelope
 from .manifest import check_catalogue, check_manifest
 from .profiles import KNOWN_PROFILES
+from .reading_order import ReadingOrder, resolve_reading_order
 from .reviews import review_status_of
 from .source import DEFAULT_LIMITS, PackageSource, TargetError, open_source
 from .structure import PackageStructure, read_structure
@@ -84,6 +85,9 @@ class PackageResult:
     tags: list[str] | None = None
     # Package spec §4.9: as declared when the manifest passes its schema. Advice only; never fetched or opened.
     apps: list[str] | None = None
+    # Package spec §4.10: the ordered collection the package is read in, when it resolves.
+    reading_order: str | None = None
+    _reading_order: ReadingOrder | None = field(default=None, repr=False)
     _catalogue: dict[str, Any] = field(default_factory=dict, repr=False)
     # Encrypted packages §5.3: for an envelope only; {"format", "opened"} and, unopened, the unverified "outline".
     envelope: dict[str, Any] | None = None
@@ -260,6 +264,20 @@ def _read(
         manifest if isinstance(manifest, dict) else {}, files, data, result.file_digests, diagnostics, options.limits
     )
     result.structure = read_structure(data, result.nodes, diagnostics, options.limits, result.digest)
+    # Package spec §4.10: readingOrder resolves against the package's own structure.ttl only.
+    reading_order = get(manifest, "readingOrder")
+    if isinstance(reading_order, str) and not diagnostics.has("M002_MANIFEST_SCHEMA"):
+        order = resolve_reading_order(result.structure.graph if result.structure else None, reading_order)
+        if order is not None:
+            result.reading_order = order.iri
+            result._reading_order = order
+        else:
+            diagnostics.add(
+                "M014_READING_ORDER_UNRESOLVED",
+                f"readingOrder {reading_order} is not an ordered collection with a member list in structure.ttl; "
+                "it is ignored",
+                file=MANIFEST,
+            )
     members = get(manifest, "members")
     members = members if isinstance(members, list) else []
     if not result.nodes and not members:

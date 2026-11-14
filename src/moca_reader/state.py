@@ -56,6 +56,8 @@ def package_state(result: PackageResult) -> dict[str, Any]:
             "contests": contests,
         }
     )
+    if result._reading_order is not None:
+        state["readingOrder"] = result._reading_order.to_state()
     return state
 
 

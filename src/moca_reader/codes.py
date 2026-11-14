@@ -42,6 +42,11 @@ CODES: dict[str, tuple[str, str]] = {
         "Two tags in one list are equal, compared case-insensitively. The repeat is dropped.",
     ),
     "M013_ALT_IMAGE_UNKNOWN": (WARNING, "A translated alt text names no image in images. It is dropped."),
+    "M014_READING_ORDER_UNRESOLVED": (
+        WARNING,
+        "readingOrder does not name an ordered collection with a member list in the package's own structure.ttl. "
+        "It is ignored.",
+    ),
     "C001_FRONTMATTER_MISSING": (ERROR, "A concept document has no YAML frontmatter (OKF MUST)."),
     "C002_FRONTMATTER_INVALID": (ERROR, "Frontmatter is not parseable YAML or is not a mapping."),
     "C003_TYPE_MISSING": (ERROR, "Frontmatter has no non-empty type (OKF MUST)."),

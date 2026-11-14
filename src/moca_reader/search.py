@@ -17,6 +17,7 @@ from ._js import js_string, timestamp, truthy
 from .audience import record_allowed
 from .citation import CitationRecord, RelationIndex, citation_for, passes_default_policy, pick_representation
 from .digest import utf8
+from .reading_order import ReadingOrder, passes_up_to
 from .state import refresh_record, state_index
 
 if TYPE_CHECKING:
@@ -103,7 +104,7 @@ class _Context:
 
 
 class Search:
-    """One entry point over a backend: ``search(query, limit=, include_all=, locale=, concepts=, scope=)``."""
+    """One entry point over a backend: ``search(query, limit=, include_all=, locale=, concepts=, scope=, up_to=)``."""
 
     def __init__(
         self,
@@ -145,8 +146,9 @@ class Search:
         locale: str | None = None,
         concepts: Sequence[str] | None = None,
         scope: str | None = None,
+        up_to: str | None = None,
     ) -> list[CitationRecord]:
-        ctx = self._context(limit, include_all, locale, concepts, scope)
+        ctx = self._context(limit, include_all, locale, concepts, scope, up_to)
         if self.hooks.ingress is not None:
             _apply_ingress(ctx, self.hooks.ingress(query, ctx.hook_context))
         limit_, filters = self._plan(ctx)
@@ -160,7 +162,13 @@ class Search:
         return self._gate(candidates, ctx)
 
     def _context(
-        self, limit: int, include_all: bool, locale: str | None, concepts: Sequence[str] | None, scope: str | None
+        self,
+        limit: int,
+        include_all: bool,
+        locale: str | None,
+        concepts: Sequence[str] | None,
+        scope: str | None,
+        up_to: str | None,
     ) -> _Context:
         now = self.clock()
         index = self.library.relation_index() if self.library else None
@@ -173,6 +181,7 @@ class Search:
                 "locale": locale,
                 "concepts": tuple(concepts) if concepts else None,
                 "scope": scope,
+                "upTo": up_to,
             }
         )
         request = dict(caller)
@@ -214,12 +223,12 @@ class Search:
             filters["locale"] = request["locale"]
         if concepts:
             filters["concepts"] = concepts
-        # Fetch more than the limit when the gate may drop hits (no pushdown), or when an egress hook reorders
-        # them and needs candidates to choose from.
+        # Fetch more than the limit when the gate may drop hits (no pushdown, or upTo, which has no pushdown
+        # filter), or when an egress hook reorders them and needs candidates to choose from.
         pushdown = "filterPushdown" in (getattr(self.backend, "features", None) or [])
         fetch = (
             request["limit"]
-            if pushdown and self.hooks.egress is None
+            if pushdown and self.hooks.egress is None and not isinstance(request.get("upTo"), str)
             else min(request["limit"] * self.overfetch, MAX_FETCH)
         )
         return fetch, filters
@@ -287,6 +296,12 @@ class Search:
                 continue
             if concepts and not any(c in concepts for c in record.get("concepts") or []):
                 continue
+            # Contract §9.2 step 6: upTo follows the caller; an ingress hook never changes it.
+            up_to = request.get("upTo")
+            if isinstance(up_to, str) and not passes_up_to(
+                record, self._reading_order(record["package"].get("digest"), ctx.loaded), up_to
+            ):
+                continue
             span = record.get("span")
             # Contract §9.2: one result per node representation and span.
             locale = record["node"].get("locale") or ""
@@ -298,6 +313,13 @@ class Search:
         if self.hooks.egress is None:
             out.sort(key=lambda r: -(r.get("score") or 0))
         return out[: request["limit"]]
+
+    def _reading_order(self, digest: Any, loaded: dict[str, PackageResult]) -> ReadingOrder | None:
+        if self.library:
+            result = loaded.get(digest)
+            return result._reading_order if result is not None else None
+        state = (self.states or {}).get(digest)
+        return ReadingOrder.from_state(state.get("readingOrder")) if state else None
 
     def _locale_ok(self, record: CitationRecord, locale: str, loaded: dict[str, PackageResult]) -> bool:
         result = loaded.get(record["package"].get("digest"))

@@ -114,7 +114,7 @@ def hostile_hooks() -> SearchHooks:
 
 def hostile_ingress_hooks() -> SearchHooks:
     """An ingress hook that asks for more than the caller did: the gate must follow the caller."""
-    return SearchHooks(ingress=lambda query, ctx: {"includeAll": True, "limit": 1000, "locale": "fr"})
+    return SearchHooks(ingress=lambda query, ctx: {"includeAll": True, "limit": 1000, "locale": "fr", "upTo": None})
 
 
 def concept_item(x: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -200,6 +200,7 @@ def actual_for(root: str, c: dict[str, Any]) -> dict[str, Any]:
             "locale": s.get("locale"),
             "concepts": s.get("concepts"),
             "scope": s.get("scope"),
+            "up_to": s.get("upTo"),
         }
         if o.get("backend") == "store":
             # Everything listed is ingested (each package on its own with `ingestSeparately`); only the packages
@@ -284,6 +285,7 @@ def actual_for(root: str, c: dict[str, Any]) -> dict[str, Any]:
         "translations": result.translations,
         "tags": result.tags,
         "apps": result.apps,
+        "readingOrder": result.reading_order,
         "evidenceMatched": evidence_matched,
         "envelope": result.envelope,
     }

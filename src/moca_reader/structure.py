@@ -208,6 +208,8 @@ class StructureGraph:
                         "members": [],
                     }
                     members[f["s"]] = {}
+                if kind == "collection":
+                    self.collections[f["s"]]["typed"] = True
                 if kind == "member":
                     c2 = self.collections[f["s"]]
                     slots = members[f["s"]]

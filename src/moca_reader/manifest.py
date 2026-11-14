@@ -27,6 +27,7 @@ MANIFEST_KEYS = {
     "translations",
     "tags",
     "apps",
+    "readingOrder",
     "validFrom",
     "validUntil",
     "members",
