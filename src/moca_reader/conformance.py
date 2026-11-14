@@ -29,7 +29,34 @@ from . import (
     ontology_guided,
     read_package,
 )
+from .age import AGE_DECRYPTOR
 from .state import package_state
+
+
+def _read_text(path: str) -> str:
+    with open(path, encoding="utf-8") as f:
+        return f.read()
+
+
+def _key_provider(root: str, o: dict[str, Any]) -> Callable[[dict[str, Any]], dict[str, Any]] | None:
+    """The conformance key provider (encrypted packages §5.1): the identities in the case's identity files, its
+    passphrase, or its file key (hex). No key options means no key provider."""
+    if o.get("identities"):
+        identities = [
+            line.strip()
+            for f in o["identities"]
+            for line in _read_text(os.path.join(root, f)).splitlines()
+            if line.strip().startswith("AGE-SECRET-KEY-1")
+        ]
+        return lambda _request: {"identities": identities}
+    if "passphrase" in o:
+        passphrase = o["passphrase"]
+        return lambda _request: {"passphrase": passphrase}
+    if "fileKey" in o:
+        file_key = bytes.fromhex(o["fileKey"])
+        return lambda _request: {"file_key": file_key}
+    return None
+
 
 UNLOADED = "sha256:" + "0" * 64
 
@@ -111,6 +138,9 @@ def actual_for(root: str, c: dict[str, Any]) -> dict[str, Any]:
         "clock": (lambda: datetime.fromisoformat(o["now"])) if o.get("now") else None,
         "require_signature": o.get("requireSignature") is True,
         "strict": o.get("strict") is True,
+        # This Reader implements the optional feature `encryption` through moca_reader.age.
+        "decryptor": AGE_DECRYPTOR,
+        "key_provider": _key_provider(root, o),
     }
     overlays = [Overlay(v["id"], v["layer"], path=os.path.join(root, v["path"])) for v in o.get("overlays") or []]
 
@@ -239,6 +269,7 @@ def actual_for(root: str, c: dict[str, Any]) -> dict[str, Any]:
         "digest": result.digest,
         "distribution": result.distribution,
         "evidenceMatched": evidence_matched,
+        "envelope": result.envelope,
     }
     if sidecar_usable is not None:
         out["sidecarUsable"] = sidecar_usable

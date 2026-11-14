@@ -13,9 +13,10 @@ import base64
 import binascii
 import hmac
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from hashlib import sha256
-from typing import Literal
+from typing import Any, Literal
 
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives import hashes
@@ -309,7 +310,16 @@ class AgeDecryptor:
         return parse_header(data, max_scrypt_work_factor)
 
     @staticmethod
-    def decrypt(data: bytes, header: Header, key: AgeKey | None, max_bytes: int | None = None) -> bytes:
+    def decrypt(
+        data: bytes, header: Header, key: AgeKey | Mapping[str, Any] | None, max_bytes: int | None = None
+    ) -> bytes:
+        """``key`` is an AgeKey, or what a key provider returns: ``{"identities"}``, ``{"passphrase"}`` or ``{"file_key"}``."""
+        if isinstance(key, Mapping):
+            key = AgeKey(
+                identities=list(key.get("identities") or []),
+                passphrase=key.get("passphrase"),
+                file_key=key.get("file_key"),
+            )
         file_key = unwrap_file_key(header, key)
         verify_mac(header, file_key)
         return decrypt_payload(data, header, file_key, max_bytes)

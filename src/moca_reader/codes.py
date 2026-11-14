@@ -46,6 +46,22 @@ CODES: dict[str, tuple[str, str]] = {
         WARNING,
         "An evidence selector does not match the text source file it cites inside the package.",
     ),
+    # Encrypted packages (moca-encrypted-package.md)
+    "E001_ENCRYPTED_NO_KEY": (
+        ERROR,
+        "An envelope was not opened: no key provider, no key or a kind of key no stanza uses, or no encryption feature.",
+    ),
+    "E002_DECRYPTION_FAILED": (ERROR, "A key was supplied for an envelope, but unwrapping or the header MAC failed."),
+    "E003_PAYLOAD_CORRUPT": (ERROR, "An envelope's encrypted payload failed authentication or was truncated."),
+    "E004_OUTLINE_MISMATCH": (ERROR, "An envelope's outline differs from the decrypted manifest or structure."),
+    "E005_ENVELOPE_INVALID": (
+        ERROR,
+        "An envelope has a missing, repeated or unexpected entry, an encrypted entry that is not stored, or an invalid moca-enc.json.",
+    ),
+    "E006_AGE_HEADER_INVALID": (
+        ERROR,
+        "An envelope's age header is malformed or unsupported, over 64 KiB, or breaks the scrypt rules or limit.",
+    ),
     "A001_ATTESTATION_MALFORMED": (ERROR, "An attestation file is not a parseable envelope and statement."),
     "A002_ATTESTATION_INVALID": (ERROR, "An attestation failed verification or does not match the package."),
     "A003_ATTESTATION_UNVERIFIABLE": (

@@ -6,6 +6,17 @@ All notable changes to `moca-reader`. The format follows [Keep a Changelog](http
 
 For moca-spec 0.7.0 ([moca-spec#5](https://github.com/openmoca/moca-spec/issues/5)).
 
+### Added (encrypted packages §2–§6)
+
+- Envelopes: recognised by content in a Zip path or bytes (a `.moca.enc`
+  path is read as a Zip by its signature); the entry and marker checks; the
+  opening order of encrypted packages §5.2 through `read_package(...,
+  decryptor=, key_provider=)`; the outline check; `PackageResult.envelope`.
+  `E001`–`E006` in `codes.py`, and the `E` family makes a package invalid.
+- `limits["maxScryptWorkFactor"]` (default 20).
+- `bind_envelope_sidecar()`: `index.age` through the same key provider; a
+  failure makes the sidecar unusable and never changes validity.
+
 ### Added (encrypted packages §4)
 
 - `moca_reader.age`: decrypt-only age v1 on `cryptography`, already a

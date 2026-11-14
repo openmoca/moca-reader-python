@@ -19,6 +19,7 @@ from .citation import CitationRecord, citation_for, passes_default_policy, pick_
 from .codes import CODES
 from .content import ContentNode, Representation
 from .diagnostics import Diagnostic
+from .envelope import bind_envelope_sidecar, is_envelope
 from .evidence_text import selector_matches
 from .library import Library, Overlay
 from .metadata import FLAT_FIELDS, flat_metadata
@@ -67,11 +68,13 @@ __all__ = [
     "StoreScope",
     "StructureIndex",
     "TrustRoot",
+    "bind_envelope_sidecar",
     "bind_sidecar",
     "citation_for",
     "directory_resolver",
     "diversify",
     "flat_metadata",
+    "is_envelope",
     "model_mismatch",
     "ontology_guided",
     "package_state",

@@ -18,6 +18,7 @@ _FILES = {
     "trustRoot": "trust-root",
     "searchHit": "search-hit",
     "structure": "structure",
+    "mocaEnc": "moca-enc",
 }
 
 

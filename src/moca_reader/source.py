@@ -33,6 +33,8 @@ DEFAULT_LIMITS: dict[str, int] = {
     # Contract §3 and package spec §7.1: composition is bounded in depth and in members resolved per read.
     "maxMemberDepth": 8,
     "maxMembers": 256,
+    # Encrypted packages §4: the scrypt work factor (log2 N) a Reader runs, at most.
+    "maxScryptWorkFactor": 20,
 }
 
 
@@ -41,6 +43,7 @@ class SourceEntry:
     path: str
     kind: str  # file | symlink | other | unreadable
     size: int | None = None
+    method: int | None = None  # the Zip compression method, for archives
 
 
 class TargetError(Exception):
@@ -70,6 +73,8 @@ class PackageSource:
     ) -> None:
         self.kind = kind
         self.location = location
+        # Encrypted packages §2: an envelope must have no hidden entry, so an archive keeps the names it skips.
+        self.hidden_entries: list[str] = []
         self._entries = entries
         self._reader = reader
         self._cache: list[SourceEntry] | None = None
@@ -186,6 +191,7 @@ def archive_source(archive: str | os.PathLike[str] | bytes, limits: dict[str, in
         )
     total = 0
     listed: list[SourceEntry] = []
+    hidden: list[str] = []
     by_path: dict[str, zipfile.ZipInfo] = {}
     for info in infos:
         name = _entry_name(info)
@@ -197,6 +203,7 @@ def archive_source(archive: str | os.PathLike[str] | bytes, limits: dict[str, in
             continue
         path = name.rstrip("/")
         if any(is_hidden_segment(s) for s in path.split("/")):
+            hidden.append(path)
             continue
         mode = (info.external_attr >> 16) & 0o170000
         kind = "file"
@@ -204,7 +211,7 @@ def archive_source(archive: str | os.PathLike[str] | bytes, limits: dict[str, in
             kind = "symlink"
         elif mode not in (0, 0o100000):
             kind = "other"
-        listed.append(SourceEntry(path, kind, info.file_size))
+        listed.append(SourceEntry(path, kind, info.file_size, info.compress_type))
         by_path[path] = info
     listed.sort(key=lambda e: utf16_key(e.path))
 
@@ -225,7 +232,9 @@ def archive_source(archive: str | os.PathLike[str] | bytes, limits: dict[str, in
         return data
 
     location = None if isinstance(archive, bytes) else os.fspath(archive)
-    return PackageSource("archive", lambda: listed, read, location)
+    source = PackageSource("archive", lambda: listed, read, location)
+    source.hidden_entries = hidden
+    return source
 
 
 def host_source(host: Any, limits: dict[str, int] | None = None) -> PackageSource:
@@ -264,6 +273,14 @@ def host_source(host: Any, limits: dict[str, int] | None = None) -> PackageSourc
     return PackageSource("host", entries, read)
 
 
+def _starts_with_zip_signature(path: str) -> bool:
+    try:
+        with open(path, "rb") as f:
+            return f.read(4) in (b"PK\x03\x04", b"PK\x05\x06")
+    except OSError:
+        return False
+
+
 def open_source(target: Any, limits: dict[str, int] | None = None) -> PackageSource:
     """A directory path, a .moca/.zip path, a PackageSource, or a host source object."""
     if isinstance(target, PackageSource):
@@ -279,6 +296,10 @@ def open_source(target: Any, limits: dict[str, int] | None = None) -> PackageSou
     if os.path.isdir(path):
         return directory_source(path, limits)
     if os.path.isfile(path) and path.lower().endswith((".moca", ".zip")):
+        return archive_source(path, limits)
+    # Encrypted packages §2: an envelope (conventionally .moca.enc) is recognised by content, so any file that starts
+    # with a Zip signature is read as an archive.
+    if os.path.isfile(path) and _starts_with_zip_signature(path):
         return archive_source(path, limits)
     raise TargetError(
         "T002_MANIFEST_NOT_FOUND", f"target exists but is neither a directory nor a .moca/.zip archive: {path}"

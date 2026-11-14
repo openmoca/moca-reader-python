@@ -27,6 +27,7 @@ from .attestations import (
 from .content import ContentNode, read_content
 from .diagnostics import Diagnostic, Diagnostics
 from .digest import ATTESTATIONS_DIR, MANIFEST, compute_digest, package_files
+from .envelope import Decryptor, EnvelopeCheck, KeyProvider, is_envelope, outline_mismatch, read_envelope
 from .manifest import check_manifest
 from .profiles import KNOWN_PROFILES
 from .reviews import review_status_of
@@ -35,7 +36,7 @@ from .structure import PackageStructure, read_structure
 from .unicode import normalize
 
 # A009 invalidates: it is only raised when the host requires a signature.
-_INVALIDATING = re.compile(r"^((T|P|M|C)[0-9]|A009)")
+_INVALIDATING = re.compile(r"^((T|P|M|C|E)[0-9]|A009)")  # Contract §11: the E family too.
 ResolveMember = Callable[[dict[str, Any]], Any]
 
 
@@ -77,6 +78,8 @@ class PackageResult:
     capabilities: list[str] = field(default_factory=list)
     # Package spec §4.1: the publisher's intent, a label only. None when the manifest fails its schema.
     distribution: str | None = None
+    # Encrypted packages §5.3: for an envelope only; {"format", "opened"} and, unopened, the unverified "outline".
+    envelope: dict[str, Any] | None = None
     payload_manifest: str | None = None
     structure: PackageStructure | None = None
     source: PackageSource | None = None
@@ -99,6 +102,8 @@ class _Options:
     known_profiles: tuple[str, ...]
     now: datetime | None
     require_signature: bool = False
+    key_provider: KeyProvider | None = None
+    decryptor: Decryptor | None = None
 
 
 MOCA_VERSION = "0.6"
@@ -129,10 +134,15 @@ def read_package(
     now: datetime | None = None,
     clock: Callable[[], datetime] | None = None,
     require_signature: bool = False,
+    key_provider: KeyProvider | None = None,
+    decryptor: Decryptor | None = None,
 ) -> PackageResult:
     """Reads and checks a package: a directory, a .moca/.zip archive, or a host source.
 
     Never raises for a malformed package: ``result.valid`` is False and ``result.diagnostics`` says why.
+
+    Encrypted packages: pass ``decryptor=AGE_DECRYPTOR`` (from ``moca_reader.age``) and a ``key_provider`` to open
+    envelopes. Without a decryptor, an envelope is reported with E001 and nothing inside it is exposed.
     """
     options = _Options(
         TrustRoot.load(trust_root) if trust_root is not None else None,
@@ -142,11 +152,15 @@ def read_package(
         tuple(known_profiles) if known_profiles is not None else KNOWN_PROFILES,
         clock() if clock is not None else now,
         require_signature,
+        key_provider,
+        decryptor,
     )
     return _read(target, options, [], [0])
 
 
-def _read(target: Any, options: _Options, stack: list[Any], budget: list[int]) -> PackageResult:
+def _read(
+    target: Any, options: _Options, stack: list[Any], budget: list[int], envelope_check: EnvelopeCheck | None = None
+) -> PackageResult:
     diagnostics = Diagnostics(options.strict)
     result = PackageResult(diagnostics=diagnostics.items)
     try:
@@ -158,6 +172,20 @@ def _read(target: Any, options: _Options, stack: list[Any], budget: list[int]) -
     result.source = source
 
     entries_ok, files = package_files(source, diagnostics)
+    # Encrypted packages §2: an archive with moca-enc.json at its root is an envelope (never the inner archive).
+    if envelope_check is None and is_envelope(source, files):
+        return read_envelope(  # type: ignore[no-any-return]
+            source,
+            files,
+            entries_ok,
+            diagnostics,
+            result,
+            options.decryptor,
+            options.key_provider,
+            options.limits,
+            lambda plain, check: _read(plain, options, stack, budget, check),
+            _finish,
+        )
     if MANIFEST not in files:
         diagnostics.add("T002_MANIFEST_NOT_FOUND", "the target has no moca.json at its root")
         return _finish(result, diagnostics)
@@ -185,6 +213,11 @@ def _read(target: Any, options: _Options, stack: list[Any], budget: list[int]) -
         diagnostics.add("M001_MANIFEST_INVALID_JSON", f"moca.json is not valid UTF-8 JSON: {err}", MANIFEST)
         return _finish(result, diagnostics)
     result.manifest = manifest
+    if envelope_check is not None:
+        why = outline_mismatch(envelope_check, manifest, data)
+        if why:
+            diagnostics.add("E004_OUTLINE_MISMATCH", why, MANIFEST)
+            return _finish(result, diagnostics)
     check_manifest(manifest, diagnostics, options.known_profiles)
     # Package spec §4.1: exposed and never acted on; "open" when absent.
     if not diagnostics.has("M002_MANIFEST_SCHEMA"):
