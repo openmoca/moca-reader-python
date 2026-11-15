@@ -295,10 +295,12 @@ def actual_for(root: str, c: dict[str, Any]) -> dict[str, Any]:
         codes.extend(d.code for d in bound.diagnostics)
         sidecar_usable = bound.usable
     evidence_matched: dict[str, list[Any]] = {}
+    evidence_located: dict[str, list[Any]] = {}
     if result.valid:
         for r in Library().add(result).citations():
             if r["evidence"]:
                 evidence_matched[r["node"]["path"]] = [e.get("matched") for e in r["evidence"]]
+                evidence_located[r["node"]["path"]] = [e.get("located") for e in r["evidence"]]
     out: dict[str, Any] = {
         "valid": result.valid,
         "codes": codes,
@@ -313,6 +315,7 @@ def actual_for(root: str, c: dict[str, Any]) -> dict[str, Any]:
         "datePublished": result.date_published,
         "issuedCopy": result.issued_copy,
         "evidenceMatched": evidence_matched,
+        "evidenceLocated": evidence_located,
         "envelope": result.envelope,
     }
     if sidecar_usable is not None:

@@ -14,6 +14,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from ._js import js_string, timestamp, truthy
+from .attestations import scope_covers
 from .audience import record_allowed
 from .citation import CitationRecord, RelationIndex, citation_for, passes_default_policy, pick_representation
 from .composition import CompositionIndex, composition_of
@@ -134,6 +135,10 @@ class Search:
             else state_index(self.states, source.allow_unsigned_relations)
         )
         self.clock: Callable[[], datetime] = source.clock
+        # Contract §9, Members: with the host's opt-in for its own packages, unsigned composers limit their members too.
+        self.allow_unsigned = (
+            source.allow_unsigned_relations is True if isinstance(source, (Library, StoreScope)) else False
+        )
         self.backend = backend
         self.audiences = list(audiences) if audiences is not None else None
         # Contract §8 (moca-spec ADR-0016): unlabelled content is outside an audience set unless the host allows it.
@@ -354,6 +359,12 @@ class Search:
         if not passes_up_to(record, self._reading_order(record["package"].get("digest"), ctx.loaded), up_to):
             return False
         for composer in ctx.composition.composers_of(record["package"].get("digest")):
+            # Contract §9, Members: a composer limits a member only when its signers speak for the member (as for
+            # relations, R004), or the host allows unsigned packages to.
+            if not self.allow_unsigned and not scope_covers(
+                self._relation_scopes(composer.digest, ctx.loaded), record["package"].get("id")
+            ):
+                continue
             if composer.digest not in late:
                 order = self._reading_order(composer.digest, ctx.loaded)
                 late[composer.digest] = (
@@ -365,6 +376,14 @@ class Search:
             if not passes_up_to(record, entry[0], up_to) or composer.binds(record, entry[1]):
                 return False
         return True
+
+    def _relation_scopes(self, digest: str, loaded: dict[Any, PackageResult]) -> list[str]:
+        if self.library:
+            result = loaded.get(digest)
+            scopes: Any = result.relation_scopes if result is not None else []
+        else:
+            scopes = ((self.states or {}).get(digest) or {}).get("relationScopes")
+        return [s for s in scopes if isinstance(s, str)] if isinstance(scopes, list) else []
 
     def _reading_order(self, digest: Any, loaded: dict[Any, PackageResult]) -> ReadingOrder | None:
         if self.library:

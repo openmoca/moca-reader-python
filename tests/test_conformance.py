@@ -38,6 +38,9 @@ def _check_package(e: dict[str, Any], actual: dict[str, Any]) -> list[str]:
     for path, want in (e.get("evidenceMatched") or {}).items():
         if actual["evidenceMatched"].get(path) != want:
             problems.append(f"evidenceMatched {path}: expected {want}, got {actual['evidenceMatched'].get(path)}")
+    for path, want in (e.get("evidenceLocated") or {}).items():
+        if actual["evidenceLocated"].get(path) != want:
+            problems.append(f"evidenceLocated {path}: expected {want}, got {actual['evidenceLocated'].get(path)}")
     return problems
 
 

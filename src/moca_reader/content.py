@@ -33,6 +33,7 @@ _LOCALE = re.compile(r"^(.*)\.([A-Za-z]{2,3}(?:-[A-Za-z0-9]{1,8})*)\.md\Z", re.I
 class EvidenceCheck:
     local: bool
     matched: bool | None = None
+    located: dict[str, Any] | None = None  # contract §7: where a refined quote is spoken
 
 
 @dataclass
@@ -454,14 +455,19 @@ def _verify_evidence(
             if key not in budget["prepared"]:
                 budget["prepared"][key] = normalised_text(source_text[path], kind)
             prepared = budget["prepared"][key]
-        matched = check_selector(selector, source_text[path], kind, prepared, duration, to_ref)
+        report: dict[str, Any] = {}
+        matched = check_selector(selector, source_text[path], kind, prepared, duration, to_ref, report)
         if matched is False:
             diagnostics.add(
                 "C011_EVIDENCE_SELECTOR_UNMATCHED",
                 f'evidence {selector.get("type")} for source "{key}" does not match {path}',
                 file,
             )
-        checks.append(EvidenceCheck(True) if matched is None else EvidenceCheck(True, matched))
+        checks.append(
+            EvidenceCheck(True)
+            if matched is None
+            else EvidenceCheck(True, matched, report.get("located") if matched else None)
+        )
     return checks
 
 

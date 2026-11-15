@@ -169,6 +169,65 @@ def is_media_time_range(selector: Any) -> bool:
     return bool(_MEDIA_FRAGMENTS.match(conforms if isinstance(conforms, str) else ""))
 
 
+# Contract §7: in a refined quote, each run of these characters counts as one space.
+_QUOTE_SPACE = re.compile(r"[\t\n\f\r ]+")
+_SPACE_CHARS = frozenset("\t\n\f\r ")
+
+
+def _js_number(x: float) -> float | int:
+    """A whole number as an int, so JSON writes it as JavaScript does."""
+    return int(x) if float(x).is_integer() else x
+
+
+def locate_quote(cues: list[Cue], window: tuple[float, float], quote: dict[str, Any]) -> tuple[float, float] | None:
+    """Contract §7: where a refining quote is spoken in a time range.
+
+    The covered text is the payloads of the cues the range overlaps, in file order, joined with LF, with each run of
+    white space as one space (the quote's parts too). Of every occurrence, the one whose cues span the shortest time
+    wins, the earliest on a tie. Returns the start of the first cue the quote's text is in and the end of the last, or
+    None when the quote is not in the covered text.
+    """
+    if not isinstance(quote.get("exact"), str):
+        return None
+
+    def part(v: Any) -> str:
+        return _QUOTE_SPACE.sub(" ", v) if isinstance(v, str) else ""
+
+    exact = part(quote["exact"])
+    if exact.strip(" ") == "":
+        return None
+    prefix = part(quote.get("prefix"))
+    needle = prefix + exact + part(quote.get("suffix"))
+    covered = [c for c in cues if window[0] < c.end and window[1] > c.start]
+    chars: list[str] = []
+    owner: list[int] = []
+    for i, c in enumerate(covered):
+        for ch in ("\n" if i > 0 else "") + c.text:
+            if ch in _SPACE_CHARS:
+                if owner and owner[-1] == -1:
+                    continue
+                chars.append(" ")
+                owner.append(-1)
+            else:
+                chars.append(ch)
+                owner.append(i)
+    text = "".join(chars)
+    best: tuple[float, float] | None = None
+    at = text.find(needle)
+    while at >= 0:
+        own = [o for o in owner[at + len(prefix) : at + len(prefix) + len(exact)] if o >= 0]
+        if own:
+            span = (covered[own[0]].start, covered[own[-1]].end)
+            if (
+                best is None
+                or span[1] - span[0] < best[1] - best[0]
+                or (span[1] - span[0] == best[1] - best[0] and span[0] < best[0])
+            ):
+                best = span
+        at = text.find(needle, at + 1)
+    return best
+
+
 def check_selector(
     selector: dict[str, Any],
     raw: str,
@@ -176,6 +235,7 @@ def check_selector(
     prepared: str | None = None,
     duration: float | None = None,
     to_reference: Callable[[tuple[float, float]], tuple[float, float] | None] | None = None,
+    report: dict[str, Any] | None = None,
 ) -> bool | None:
     """Checks one selector against a source's raw text; None when it cannot be checked against this source."""
     if selector.get("type") == "FragmentSelector":
@@ -191,10 +251,23 @@ def check_selector(
         if not any(window[0] < c.end and window[1] > c.start for c in cues):
             return False
         # Contract §7: the range lies within the media, bounded by the latest cue end or the declared duration.
-        if window[1] == float("inf"):
+        if window[1] != float("inf"):
+            bound = max([c.end for c in cues] + ([duration] if duration is not None else []))
+            if window[1] > bound:
+                return False
+        # Contract §7: a range refined by a quote matches only when the quote is in the cues it covers.
+        refined = selector.get("refinedBy")
+        if not isinstance(refined, dict) or refined.get("type") != "TextQuoteSelector":
             return True
-        bound = max([c.end for c in cues] + ([duration] if duration is not None else []))
-        return window[1] <= bound
+        located = locate_quote(cues, window, refined)
+        if located is None:
+            return False
+        # On an alternate, back to the cited source's timeline by the stretch's offset.
+        assert parsed is not None
+        offset = parsed[0] - window[0]
+        if report is not None:
+            report["located"] = {"start": _js_number(located[0] + offset), "end": _js_number(located[1] + offset)}
+        return True
     # The quote is normalised as the source is, so markup in either never decides a match.
     quote = _normalise_quote(selector, kind) if selector.get("type") == "TextQuoteSelector" else selector
     return selector_matches(quote, prepared if prepared is not None else normalised_text(raw, kind))

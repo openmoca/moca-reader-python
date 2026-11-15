@@ -191,9 +191,13 @@ def citation_for(
             entry["selector"] = get(e, "selector")
         if truthy(get(e, "note")):
             entry["note"] = get(e, "note")
-        matched = rep.evidence_checks[i].matched if i < len(rep.evidence_checks) else None
+        check = rep.evidence_checks[i] if i < len(rep.evidence_checks) else None
+        matched = check.matched if check is not None else None
         if matched is not None:
             entry["matched"] = matched
+        # Contract §7: where a refined quote is spoken, cue-precise.
+        if check is not None and check.located is not None:
+            entry["located"] = dict(check.located)
         evidence.append(entry)
 
     record: CitationRecord = {
