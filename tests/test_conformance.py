@@ -80,5 +80,7 @@ def test_case(case: dict[str, Any]) -> None:
         pytest.skip("Sigstore verification needs the sigstore extra")
     actual = actual_for(str(ROOT), case)
     kind = case.get("kind", "package")
-    check = _check_search if kind == "search" else _check_structure if kind == "structure" else _check_package
+    check = (
+        _check_search if kind == "search" else _check_structure if kind in ("structure", "map-time") else _check_package
+    )
     assert check(case["expect"], actual) == []

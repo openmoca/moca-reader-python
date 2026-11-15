@@ -5,14 +5,18 @@ from __future__ import annotations
 import posixpath
 import re
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ._js import decode_uri_component, get, js_sorted, js_trim, posix_dirname, posix_join, truthy, utf16_key
+from .alternates import default_sync, range_to_reference, sync_problem
 from .diagnostics import Diagnostics
 from .evidence_text import check_selector, is_media_time_range, normalised_text, source_kind
 from .frontmatter import split_frontmatter
 from .schemas import validate_against
 from .unicode import normalize
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 CONTENT_DIR = "content"
 _RESERVED = {"index.md", "log.md"}
@@ -42,6 +46,8 @@ class MediaDescription:
     digest: str | None = None
     transcript: str | None = None
     transcript_path: str | None = None  # the package path of the transcript; internal
+    alternate_of: str | None = None
+    sync: list[dict[str, Any]] | None = None
 
     def to_json(self) -> dict[str, Any]:
         out: dict[str, Any] = {"source": self.source, "resource": self.resource, "type": self.type}
@@ -51,6 +57,9 @@ class MediaDescription:
             out["digest"] = self.digest
         if self.transcript is not None:
             out["transcript"] = self.transcript
+        if self.alternate_of is not None:
+            out["alternateOf"] = self.alternate_of
+            out["sync"] = [{"at": e["at"], "offset": e["offset"]} for e in self.sync or []]
         return out
 
 
@@ -226,7 +235,7 @@ def _check_evidence(file: str, fm: dict[str, Any], diagnostics: Diagnostics) -> 
 
 
 # Package spec §5.7: the keys of a media description and the form of each.
-_MEDIA_KEYS = {"source", "type", "duration", "digest", "transcript"}
+_MEDIA_KEYS = {"source", "type", "duration", "digest", "transcript", "alternateOf", "sync"}
 _MEDIA_TYPE = re.compile(
     r"^[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,126}/[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,126}(?:[ \t]*;[^\n\r]*)?\Z"
 )
@@ -253,7 +262,22 @@ def _well_formed_media(m: Any) -> bool:
         return False
     if "digest" in m and not (isinstance(m["digest"], str) and _SHA256.match(m["digest"])):
         return False
-    return "transcript" not in m or (isinstance(m["transcript"], str) and m["transcript"] != "")
+    if "transcript" in m and not (isinstance(m["transcript"], str) and m["transcript"] != ""):
+        return False
+    if "alternateOf" in m and not (isinstance(m["alternateOf"], str) and m["alternateOf"] != ""):
+        return False
+    sync = m.get("sync")
+    return "sync" not in m or (
+        isinstance(sync, list) and len(sync) > 0 and all(_well_formed_sync_entry(e) for e in sync)
+    )
+
+
+def _well_formed_sync_entry(e: Any) -> bool:
+    if not isinstance(e, dict) or any(k not in ("at", "offset") for k in e) or "offset" not in e:
+        return False
+    if not (_number(e.get("at")) and e["at"] >= 0):
+        return False
+    return e["offset"] is None or _number(e["offset"])
 
 
 def _local_evidence_path(file: str, resource: Any, files: dict[str, str]) -> str | None:
@@ -281,6 +305,7 @@ def _media_descriptions(
             sources[sid] = s
     described: set[str] = set()
     out: list[MediaDescription] = []
+    raw: dict[int, dict[str, Any]] = {}
     for m in listed:
         if not _well_formed_media(m):
             continue  # the node schema reports it (C005)
@@ -320,6 +345,35 @@ def _media_descriptions(
                     file,
                 )
         out.append(d)
+        raw[id(d)] = m
+    # §5.7, Alternates: checked once every description is known, so the order of descriptions does not matter.
+    for d in out:
+        m = raw[id(d)]
+        if "alternateOf" not in m:
+            if "sync" in m:
+                diagnostics.add(
+                    "C005_FIELD_INVALID", f'media "{d.source}" has sync but no alternateOf; sync is dropped', file
+                )
+            continue
+        ref = next((x for x in out if x.source == m["alternateOf"]), None)
+        sync = m.get("sync") or default_sync()
+        if ref is None:
+            problem: str | None = f'names "{m["alternateOf"]}", which is no valid description in this node'
+        elif ref is d:
+            problem = "names itself"
+        elif "alternateOf" in raw[id(ref)]:
+            problem = f'names "{ref.source}", which is an alternate itself'
+        else:
+            problem = sync_problem(sync)
+        if problem:
+            diagnostics.add(
+                "C005_FIELD_INVALID",
+                f'media "{d.source}" alternateOf {problem}; alternateOf and sync are dropped',
+                file,
+            )
+            continue
+        d.alternate_of = m["alternateOf"]
+        d.sync = [{"at": e["at"], "offset": e["offset"]} for e in sync]
     return out
 
 
@@ -354,11 +408,19 @@ def _verify_evidence(
         # Contract §7: a time range is checked against the cited WebVTT file, or the transcript of the cited media,
         # and bounded by the media's duration. A time range checked this way is evidence checkable in the package.
         duration: float | None = None
+        to_ref: Callable[[tuple[float, float]], tuple[float, float] | None] | None = None
         if is_media_time_range(selector) and (not path or source_kind(path) != "webvtt"):
             d = descriptions.get(key) if isinstance(key, str) else None
+            ref = descriptions.get(d.alternate_of) if d is not None and d.alternate_of is not None else None
             if d is not None and d.transcript_path:
                 path = d.transcript_path
                 duration = d.duration
+            elif d is not None and ref is not None and ref.transcript_path:
+                # §5.7: an alternate with no transcript of its own is checked through its reference.
+                path = ref.transcript_path
+                duration = ref.duration
+                alt_sync = d.sync or default_sync()
+                to_ref = lambda window, s=alt_sync: range_to_reference(s, window)  # noqa: E731
         elif path and source_kind(path) == "webvtt":
             duration = next((d.duration for d in media or [] if d.transcript == key), None)
         if not path:
@@ -388,7 +450,7 @@ def _verify_evidence(
             if key not in budget["prepared"]:
                 budget["prepared"][key] = normalised_text(source_text[path], kind)
             prepared = budget["prepared"][key]
-        matched = check_selector(selector, source_text[path], kind, prepared, duration)
+        matched = check_selector(selector, source_text[path], kind, prepared, duration, to_ref)
         if matched is False:
             diagnostics.add(
                 "C011_EVIDENCE_SELECTOR_UNMATCHED",

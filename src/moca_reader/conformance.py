@@ -26,6 +26,7 @@ from . import (
     StoreScope,
     bind_sidecar,
     directory_resolver,
+    map_time,
     ontology_guided,
     read_package,
 )
@@ -144,6 +145,21 @@ def actual_for(root: str, c: dict[str, Any]) -> dict[str, Any]:
         "key_provider": _key_provider(root, o),
     }
     overlays = [Overlay(v["id"], v["layer"], path=os.path.join(root, v["path"])) for v in o.get("overlays") or []]
+
+    # Reader interface §4: map_time on the node's default-language citation record, once per call.
+    if c.get("kind") == "map-time":
+        result = read_package(os.path.join(root, c["target"]), **read_options)
+        single = Library()
+        if result.valid:
+            single.add(result)
+        record = next((r for r in single.citations() if r["node"]["path"] == c["node"]), None)
+        return {
+            "codes": [d.code for d in result.diagnostics],
+            "result": [
+                map_time(record, call["from"], call["to"], call["t"]) if record is not None else None
+                for call in c["calls"]
+            ],
+        }
 
     if c.get("kind") == "structure":
         library = Library(overlays=overlays)

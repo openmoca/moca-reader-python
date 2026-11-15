@@ -10,9 +10,12 @@ from __future__ import annotations
 import math
 import re
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ._js import js_split_ws, js_trim
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 _KINDS = [
     (re.compile(r"\.(txt|text)\Z", re.I | re.A), "text"),
@@ -167,14 +170,21 @@ def is_media_time_range(selector: Any) -> bool:
 
 
 def check_selector(
-    selector: dict[str, Any], raw: str, kind: str, prepared: str | None = None, duration: float | None = None
+    selector: dict[str, Any],
+    raw: str,
+    kind: str,
+    prepared: str | None = None,
+    duration: float | None = None,
+    to_reference: Callable[[tuple[float, float]], tuple[float, float] | None] | None = None,
 ) -> bool | None:
     """Checks one selector against a source's raw text; None when it cannot be checked against this source."""
     if selector.get("type") == "FragmentSelector":
         conforms = selector.get("conformsTo")
         if not _MEDIA_FRAGMENTS.match(conforms if isinstance(conforms, str) else "") or kind != "webvtt":
             return None
-        window = media_time_range(selector.get("value"))
+        parsed = media_time_range(selector.get("value"))
+        # Package spec §5.7: a range on an alternate is checked on its reference's timeline; one that does not map fails.
+        window = to_reference(parsed) if parsed is not None and to_reference is not None else parsed
         if window is None:
             return False
         cues = webvtt(raw)[0]

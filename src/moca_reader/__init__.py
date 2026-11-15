@@ -10,6 +10,7 @@
 Names follow the Reader interface (moca-spec spec/moca-reader-interface.md) in Python's style.
 """
 
+from .alternates import map_time
 from .attestations import TrustRoot
 from .backends.dense import DenseBackend, model_mismatch, similarity
 from .backends.hybrid import HybridBackend
@@ -75,6 +76,7 @@ __all__ = [
     "diversify",
     "flat_metadata",
     "is_envelope",
+    "map_time",
     "model_mismatch",
     "ontology_guided",
     "package_state",
