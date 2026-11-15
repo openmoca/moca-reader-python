@@ -224,9 +224,7 @@ def test_a_work_factor_limit_is_checked_when_the_read_starts() -> None:
 
 def test_null_identities_are_e002() -> None:
     """The same code in every Reader: a key was supplied, and it cannot be used."""
-    r = read_package(
-        ENVELOPES / "x25519.mocae", decryptor=AGE_DECRYPTOR, key_provider=lambda _r: {"identities": None}
-    )
+    r = read_package(ENVELOPES / "x25519.mocae", decryptor=AGE_DECRYPTOR, key_provider=lambda _r: {"identities": None})
     assert [d.code for d in r.diagnostics] == ["E002_DECRYPTION_FAILED"]
 
 
@@ -269,9 +267,7 @@ def test_the_plaintext_is_read_in_place_and_zeroed(monkeypatch: pytest.MonkeyPat
         return real(archive, limits)
 
     monkeypatch.setattr(source_module, "archive_source", spy)
-    r = read_package(
-        ENVELOPES / "x25519.mocae", decryptor=Keep(False), key_provider=with_key(TEST_KEY)["key_provider"]
-    )
+    r = read_package(ENVELOPES / "x25519.mocae", decryptor=Keep(False), key_provider=with_key(TEST_KEY)["key_provider"])
     assert r.valid
     [plain] = returned
     assert any(o is plain for o in opened), "the plaintext was copied before it was opened"
