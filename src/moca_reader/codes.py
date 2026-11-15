@@ -48,7 +48,10 @@ CODES: dict[str, tuple[str, str]] = {
         "It is ignored.",
     ),
     "C001_FRONTMATTER_MISSING": (ERROR, "A concept document has no YAML frontmatter (OKF MUST)."),
-    "C002_FRONTMATTER_INVALID": (ERROR, "Frontmatter is not parseable YAML or is not a mapping."),
+    "C002_FRONTMATTER_INVALID": (
+        ERROR,
+        "Frontmatter is not parseable YAML, is not a mapping, repeats a key, uses an alias, or lists two sources with one `id`.",
+    ),
     "C003_TYPE_MISSING": (ERROR, "Frontmatter has no non-empty type (OKF MUST)."),
     "C004_RESERVED_FILE_INVALID": (ERROR, "index.md or log.md breaks the OKF reserved-file rules."),
     "C005_FIELD_INVALID": (WARNING, "A frontmatter field does not match the node schema."),

@@ -110,6 +110,13 @@ def read_content(
             diagnostics.add("C002_FRONTMATTER_INVALID", split.error, file, split.line)
             continue
         fm: dict[str, Any] = split.data
+        # Package spec §5.1: evidence and media name a source by its id, so two sources with one id leave none chosen.
+        repeated = _repeated_source_id(fm)
+        if repeated is not None:
+            diagnostics.add(
+                "C002_FRONTMATTER_INVALID", f'sources has two entries with the id "{repeated}"; none is chosen', file
+            )
+            continue
         if not isinstance(fm.get("type"), str) or js_trim(fm["type"]) == "":
             diagnostics.add("C003_TYPE_MISSING", 'frontmatter needs a non-empty "type"', file)
             continue
@@ -137,6 +144,20 @@ def read_content(
             )
         nodes.append(node)
     return nodes
+
+
+def _repeated_source_id(fm: dict[str, Any]) -> str | None:
+    """The first source id that two entries of the frontmatter's ``sources`` share, or None."""
+    seen: set[str] = set()
+    sources = fm.get("sources")
+    for s in sources if isinstance(sources, list) else []:
+        sid = s.get("id") if isinstance(s, dict) else None
+        if not isinstance(sid, str):
+            continue
+        if sid in seen:
+            return sid
+        seen.add(sid)
+    return None
 
 
 def _locale_of(rel: str, locales: dict[str, Any]) -> tuple[str, str | None]:
