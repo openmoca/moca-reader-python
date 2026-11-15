@@ -213,11 +213,14 @@ def actual_for(root: str, c: dict[str, Any]) -> dict[str, Any]:
                     store.ingest(single)
             else:
                 store.ingest(library)
-            allow = {os.path.join(root, t) for t in o.get("allow") or []}
+            # Members' locations come from the member resolver, so compare normalised paths (separators on Windows).
+            allow = {os.path.normcase(os.path.normpath(os.path.join(root, t))) for t in o.get("allow") or []}
             allowed = [
                 package_state(p.result)
                 for p in library.packages
-                if p.result.source and p.result.source.location in allow
+                if p.result.source
+                and p.result.source.location
+                and os.path.normcase(os.path.normpath(p.result.source.location)) in allow
             ]
             store_search = Search(
                 StoreScope(allowed, lambda: now, o.get("allowUnsignedRelations") is True),
