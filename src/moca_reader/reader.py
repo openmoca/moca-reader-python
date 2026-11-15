@@ -187,11 +187,21 @@ def read_package(
         key_provider,
         decryptor,
     )
-    return _read(target, options, [], [0])
+    # Contract §3: one budget per read. Each member pin is read once and shared, so repeats cost nothing more.
+    return _read(target, options, [], _ReadBudget())
+
+
+@dataclass
+class _ReadBudget:
+    """Contract §3: what one read has spent on members, and each member read so far, by pin."""
+
+    resolved: int = 0
+    bytes: int = 0
+    members: dict[str, PackageResult | None] = field(default_factory=dict)
 
 
 def _read(
-    target: Any, options: _Options, stack: list[Any], budget: list[int], envelope_check: EnvelopeCheck | None = None
+    target: Any, options: _Options, stack: list[Any], budget: _ReadBudget, envelope_check: EnvelopeCheck | None = None
 ) -> PackageResult:
     diagnostics = Diagnostics(options.strict)
     result = PackageResult(diagnostics=diagnostics.items)
@@ -237,6 +247,9 @@ def _read(
     # An entry that cannot be read leaves nothing to check the rest against: stop with P002, as the reference does.
     if not readable:
         return _finish(result, diagnostics)
+    # Contract §3: the bytes of every member read count toward one budget for the whole read.
+    if stack:
+        budget.bytes += sum(len(b) for b in data.values())
 
     try:
         # Contract §11, M001: moca.json is UTF-8; invalid bytes are an error, not replaced.
@@ -519,10 +532,11 @@ def _resolve_members(
     options: _Options,
     stack: list[Any],
     diagnostics: Diagnostics,
-    budget: list[int],
+    budget: _ReadBudget,
 ) -> None:
     max_depth = options.limits["maxMemberDepth"]
     max_members = options.limits["maxMembers"]
+    max_bytes = options.limits["maxMemberBytes"]
     # Cycles are detected by id@version: composing another version of the same package is not a cycle.
     own_key = f"{get(result.manifest, 'id')}@{get(result.manifest, 'version')}"
     for member in members:
@@ -546,21 +560,34 @@ def _resolve_members(
                 MANIFEST,
             )
             continue
-        if budget[0] >= max_members:
-            diagnostics.add(
-                "R001_MEMBER_UNRESOLVED",
-                f"member {member_key} is not resolved: more than {max_members} members in one read",
-                MANIFEST,
-            )
-            continue
-        budget[0] += 1
-        target = options.resolve_member({"id": entry.id, "version": entry.version, "digest": entry.digest})
-        if not target:
+        # Contract §3: a pin met again in the same read shares the first read's result and counts once.
+        pin = f"{member['id']}@{member.get('version')}#{member['digest']}"
+        if pin in budget.members:
+            child = budget.members[pin]
+        else:
+            if budget.resolved >= max_members:
+                diagnostics.add(
+                    "R001_MEMBER_UNRESOLVED",
+                    f"member {member_key} is not resolved: more than {max_members} members in one read",
+                    MANIFEST,
+                )
+                continue
+            if budget.bytes > max_bytes:
+                diagnostics.add(
+                    "R001_MEMBER_UNRESOLVED",
+                    f"member {member_key} is not resolved: the members read so far hold more than {max_bytes} bytes",
+                    MANIFEST,
+                )
+                continue
+            budget.resolved += 1
+            target = options.resolve_member({"id": entry.id, "version": entry.version, "digest": entry.digest})
+            child = _read(target, options, [*stack, own_key], budget) if target else None
+            budget.members[pin] = child
+        if child is None:
             diagnostics.add(
                 "R001_MEMBER_UNRESOLVED", f"member {entry.id}@{entry.version} could not be resolved", MANIFEST
             )
             continue
-        child = _read(target, options, [*stack, own_key], budget)
         entry.result = child
         if any(d.code == "R003_MEMBER_CYCLE" for d in child.diagnostics):
             diagnostics.add("R003_MEMBER_CYCLE", f"member {entry.id} is part of a cycle", MANIFEST)

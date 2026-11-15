@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any
 
 from ._js import effective_window, get, js_string, timestamp, truthy
 from .audience import audience_of
-from .content import ContentNode, Representation
+from .content import ContentNode, Representation, sources_by_id
 from .digest import utf8
 from .reviews import review_status_of
 
@@ -96,12 +96,7 @@ def citation_for(
         *(moca["contested_by"] if isinstance(moca.get("contested_by"), list) else []),
         *(index[1].get(key, []) if index else []),
     ]
-    declared_sources = fm.get("sources")
-    sources: dict[Any, Any] = {}
-    for s in declared_sources if isinstance(declared_sources, list) else []:
-        sid = get(s, "id")
-        if truthy(sid) and isinstance(sid, (str, int, float, bool)):
-            sources[sid] = s
+    sources: dict[Any, Any] = sources_by_id(fm)
 
     package: dict[str, Any] = {
         "id": manifest.get("id"),

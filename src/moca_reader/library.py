@@ -168,6 +168,7 @@ class Library:
         locale: str | None = None,
         concepts: list[str] | None = None,
         scope: str | None = None,
+        up_to: str | None = None,
         audiences: list[str] | None = None,
         allow_unlabelled: bool = False,
     ) -> list[CitationRecord]:
@@ -176,7 +177,7 @@ class Library:
         from .search import Search
 
         return Search(self, LexicalBackend(self), audiences=audiences, allow_unlabelled=allow_unlabelled).search(
-            query, limit=limit, include_all=include_all, locale=locale, concepts=concepts, scope=scope
+            query, limit=limit, include_all=include_all, locale=locale, concepts=concepts, scope=scope, up_to=up_to
         )
 
 

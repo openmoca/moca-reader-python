@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
 
 from ._js import js_sorted, utf16_key
 from .citation import CitationRecord, passes_default_policy
-from .composition import bound_concepts, composition_index, composition_of
+from .composition import CompositionIndex, composition_of
 from .structure import Fact, StructureGraph, preferred
 
 if TYPE_CHECKING:
@@ -156,10 +156,11 @@ class StructureIndex:
                         wanted.add(e["iri"])
                         stack.append(e["iri"])
         # Package spec §5.6: a record is bound by its node's own concepts and by composition, as for search.
-        composition = composition_index([(p.result.digest, composition_of(p.result)) for p in self.library.packages])
+        composition = CompositionIndex([(p.result.digest, composition_of(p.result)) for p in self.library.packages])
+        wanted_set = frozenset(wanted)
         records = [
             r
             for r in self.library.citations(locale, include_text=True)
-            if any(c in wanted for c in bound_concepts(r, composition)) and (include_all or passes_default_policy(r))
+            if composition.bound_to(r, wanted_set) and (include_all or passes_default_policy(r))
         ]
         return sorted(records, key=lambda r: utf16_key(r["node"]["ref"]))

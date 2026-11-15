@@ -7,7 +7,7 @@ import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from ._js import decode_uri_component, get, js_sorted, js_trim, posix_dirname, posix_join, truthy, utf16_key
+from ._js import decode_uri_component, get, js_sorted, js_trim, posix_dirname, posix_join, utf16_key
 from .alternates import default_sync, range_to_reference, sync_problem
 from .diagnostics import Diagnostics
 from .evidence_text import check_selector, is_media_time_range, normalised_text, source_kind
@@ -214,9 +214,23 @@ def _check_reserved(
             )
 
 
-def _source_ids(fm: dict[str, Any]) -> list[Any]:
-    sources = fm.get("sources")
-    return [get(s, "id") for s in (sources if isinstance(sources, list) else []) if truthy(get(s, "id"))]
+def sources_by_id(fm: dict[str, Any]) -> dict[str, Any]:
+    """The node's sources by id.
+
+    Package spec §5.1: a source whose id is not a non-empty string has no id (the node schema reports C005), so
+    nothing can name it. A repeated id never reaches here: it is C002.
+    """
+    out: dict[str, Any] = {}
+    declared = fm.get("sources")
+    for s in declared if isinstance(declared, list) else []:
+        sid = s.get("id") if isinstance(s, dict) else None
+        if isinstance(sid, str) and sid != "" and sid not in out:
+            out[sid] = s
+    return out
+
+
+def _source_ids(fm: dict[str, Any]) -> list[str]:
+    return list(sources_by_id(fm))
 
 
 def _check_evidence(file: str, fm: dict[str, Any], diagnostics: Diagnostics) -> None:
@@ -297,12 +311,7 @@ def _media_descriptions(
     listed = get(fm.get("moca"), "media")
     if not isinstance(listed, list):
         return []
-    declared = fm.get("sources")
-    sources: dict[str, Any] = {}
-    for s in declared if isinstance(declared, list) else []:
-        sid = get(s, "id")
-        if isinstance(sid, str):
-            sources[sid] = s
+    sources = sources_by_id(fm)
     described: set[str] = set()
     out: list[MediaDescription] = []
     raw: dict[int, dict[str, Any]] = {}
@@ -392,12 +401,7 @@ def _verify_evidence(
     evidence = get(fm.get("moca"), "evidence")
     if not isinstance(evidence, list):
         return []
-    declared = fm.get("sources")
-    sources: dict[Any, Any] = {}
-    for s in declared if isinstance(declared, list) else []:
-        sid = get(s, "id")
-        if truthy(sid) and isinstance(sid, (str, int, float, bool)):
-            sources[sid] = s
+    sources: dict[Any, Any] = sources_by_id(fm)
     descriptions = {d.source: d for d in media or []}
     checks: list[EvidenceCheck] = []
     for i, e in enumerate(evidence):

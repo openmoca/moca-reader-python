@@ -46,17 +46,19 @@ def resolve_reading_order(graph: StructureGraph | None, iri: str) -> ReadingOrde
     collection = graph.collections.get(iri) if graph is not None else None
     if graph is None or not collection or not collection.get("typed") or not collection["members"]:
         return None
+    # Contract §3: one walk in list order, with one visited set. A concept first reached from member i keeps i, as it
+    # would if each member were walked on its own, and nothing is walked twice.
     positions: dict[str, int] = {}
     for i, member in enumerate(collection["members"]):
         stack = [member]
-        seen: set[str] = set()
         while stack:
             n = stack.pop()
-            if n in seen:
+            if n in positions:
                 continue
-            seen.add(n)
-            positions.setdefault(n, i)
-            stack.extend(e["iri"] for e in [*graph.in_("broader", n), *graph.out("hasPart", n)])
+            positions[n] = i
+            stack.extend(
+                e["iri"] for e in [*graph.in_("broader", n), *graph.out("hasPart", n)] if e["iri"] not in positions
+            )
     return ReadingOrder(iri, tuple(collection["members"]), positions)
 
 

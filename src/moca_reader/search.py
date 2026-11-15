@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from ._js import js_string, timestamp, truthy
 from .audience import record_allowed
 from .citation import CitationRecord, RelationIndex, citation_for, passes_default_policy, pick_representation
-from .composition import bound_concepts, composed_concepts, composition_index, composition_of
+from .composition import CompositionIndex, composition_of
 from .diagnostics import Diagnostic, Diagnostics
 from .digest import utf8
 from .reading_order import ReadingOrder, passes_up_to
@@ -104,7 +104,7 @@ class _Context:
     loaded: dict[str, PackageResult]
     hook_context: HookContext
     # Package spec §5.6: what each loaded composing package binds its members to.
-    composition: dict[str, list[dict[str, Any]]]
+    composition: CompositionIndex
 
 
 class Search:
@@ -210,7 +210,7 @@ class Search:
             self.audiences,
             now,
         )
-        composition = composition_index(
+        composition = CompositionIndex(
             [(r.digest, composition_of(r)) for r in loaded.values()]
             if self.library
             else [(s.get("digest"), s.get("composition")) for s in (self.states or {}).values() if isinstance(s, dict)]
@@ -245,7 +245,7 @@ class Search:
             filters["locale"] = request["locale"]
         # Contract §9.5: a record bound by composition carries none of those concepts itself, so the filter is left
         # to the gate when any loaded package binds members.
-        if concepts and not ctx.composition:
+        if concepts and not ctx.composition.has_bindings:
             filters["concepts"] = concepts
         # Fetch more than the limit when the gate may drop hits (no pushdown, or upTo, which has no pushdown
         # filter), or when an egress hook reorders them and needs candidates to choose from.
@@ -255,7 +255,7 @@ class Search:
             if pushdown
             and self.hooks.egress is None
             and not isinstance(request.get("upTo"), str)
-            and not (concepts and ctx.composition)
+            and not (concepts and ctx.composition.has_bindings)
             else min(request["limit"] * self.overfetch, MAX_FETCH)
         )
         return fetch, filters
@@ -307,6 +307,8 @@ class Search:
         """The gate: always last, whatever the backend and the hooks did."""
         request = ctx.caller
         concepts = self._concepts(request)
+        wanted = frozenset(concepts) if concepts else None
+        late: dict[str, tuple[ReadingOrder, frozenset[str]] | None] = {}
         allowed = set(ctx.loaded) if self.library else (self.allowed or set())
         seen: set[str] = set()
         out: list[CitationRecord] = []
@@ -321,11 +323,11 @@ class Search:
                 continue
             if request["locale"] and not self._locale_ok(record, request["locale"], ctx.loaded):
                 continue
-            if concepts and not any(c in concepts for c in bound_concepts(record, ctx.composition)):
+            if wanted is not None and not ctx.composition.bound_to(record, wanted):
                 continue
             # Contract §9.2 step 6: upTo follows the caller; an ingress hook never changes it.
             up_to = request.get("upTo")
-            if isinstance(up_to, str) and not self._passes_up_to(record, up_to, ctx):
+            if isinstance(up_to, str) and not self._passes_up_to(record, up_to, ctx, late):
                 continue
             span = record.get("span")
             # Contract §9.2: one result per node representation and span.
@@ -339,17 +341,28 @@ class Search:
             out.sort(key=lambda r: -(r.get("score") or 0))
         return out[: request["limit"]]
 
-    def _passes_up_to(self, record: dict[str, Any], up_to: str, ctx: _Context) -> bool:
+    def _passes_up_to(
+        self,
+        record: dict[str, Any],
+        up_to: str,
+        ctx: _Context,
+        late: dict[str, tuple[ReadingOrder, frozenset[str]] | None],
+    ) -> bool:
         """Contract §9: the record's own package limits it by the node's own concepts; each loaded package that
-        composes it and whose reading order places upTo limits it by the node's own concepts and its bindings."""
+        holds it as a member and whose reading order places upTo limits it by the node's own concepts and the
+        concepts it binds it to: none of them, or their ancestors, may come after upTo."""
         if not passes_up_to(record, self._reading_order(record["package"].get("digest"), ctx.loaded), up_to):
             return False
-        for e in ctx.composition.get(record["package"].get("digest"), []):
-            order = self._reading_order(e["composer"], ctx.loaded)
-            if order is None or up_to not in order.positions:
+        for composer in ctx.composition.composers_of(record["package"].get("digest")):
+            if composer.digest not in late:
+                order = self._reading_order(composer.digest, ctx.loaded)
+                late[composer.digest] = (
+                    (order, _late_concepts(order, up_to)) if order is not None and up_to in order.positions else None
+                )
+            entry = late[composer.digest]
+            if entry is None:
                 continue
-            concepts = [*(record.get("concepts") or []), *composed_concepts(e, record)]
-            if not passes_up_to({"concepts": concepts}, order, up_to):
+            if not passes_up_to(record, entry[0], up_to) or composer.binds(record, entry[1]):
                 return False
         return True
 
@@ -369,6 +382,12 @@ class Search:
             return have == want or want.startswith(f"{have}-") or have.startswith(f"{want}-")
         rep = pick_representation(node, locale)
         return bool((rep.locale or result.manifest.get("language")) == record["node"].get("locale"))
+
+
+def _late_concepts(order: ReadingOrder, up_to: str) -> frozenset[str]:
+    """The concepts a reading order places after upTo (contract §9)."""
+    limit = order.positions[up_to]
+    return frozenset(c for c, n in order.positions.items() if n > limit)
 
 
 def _apply_ingress(ctx: _Context, result: Any) -> None:
