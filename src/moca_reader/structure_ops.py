@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 
 from ._js import js_sorted, utf16_key
 from .citation import CitationRecord, passes_default_policy
+from .composition import bound_concepts, composition_index, composition_of
 from .structure import Fact, StructureGraph, preferred
 
 if TYPE_CHECKING:
@@ -137,6 +138,8 @@ class StructureIndex:
     ) -> list[CitationRecord]:
         """Citation records of the nodes bound to ``iri`` (and to its narrower concepts or parts, by ``include``).
 
+        A node is bound by its own concepts or by composition (package spec §5.6).
+
         The default retrieval policy applies unless ``include_all`` is set. Sorted by node reference.
         """
         wanted = {iri}
@@ -152,9 +155,11 @@ class StructureIndex:
                     if e["iri"] not in wanted:
                         wanted.add(e["iri"])
                         stack.append(e["iri"])
+        # Package spec §5.6: a record is bound by its node's own concepts and by composition, as for search.
+        composition = composition_index([(p.result.digest, composition_of(p.result)) for p in self.library.packages])
         records = [
             r
             for r in self.library.citations(locale, include_text=True)
-            if any(c in wanted for c in r.get("concepts", [])) and (include_all or passes_default_policy(r))
+            if any(c in wanted for c in bound_concepts(r, composition)) and (include_all or passes_default_policy(r))
         ]
         return sorted(records, key=lambda r: utf16_key(r["node"]["ref"]))
