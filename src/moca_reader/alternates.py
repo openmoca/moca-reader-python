@@ -77,7 +77,8 @@ def range_to_reference(sync: list[dict[str, Any]], window: tuple[float, float]) 
     for s in _stretches(sync):
         if s.offset is not None and s.lo <= start < s.hi:
             if end == math.inf:
-                return start - s.offset, math.inf
+                # A range with no end runs to the end of its stretch on the reference.
+                return start - s.offset, s.end
             return (start - s.offset, end - s.offset) if end <= s.hi else None
     return None
 

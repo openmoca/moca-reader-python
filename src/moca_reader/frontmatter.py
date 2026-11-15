@@ -69,6 +69,8 @@ _INT = re.compile(r"^[-+]?[0-9]+\Z")
 _OCT = re.compile(r"^0o[0-7]+\Z")
 _HEX = re.compile(r"^0x[0-9a-fA-F]+\Z")
 _FLOAT = re.compile(r"^[-+]?(?:\.[0-9]+|[0-9]+(?:\.[0-9]*)?)(?:[eE][-+]?[0-9]+)?\Z")
+_INF = re.compile(r"^[-+]?\.(?:inf|Inf|INF)\Z")
+_NAN = re.compile(r"^\.(?:nan|NaN|NAN)\Z")
 _STR_TAG = "tag:yaml.org,2002:str"
 
 
@@ -98,6 +100,11 @@ def _resolve(event: yaml.ScalarEvent) -> Any:
         return int(value[2:], 16)
     if _FLOAT.match(value):
         return float(value)
+    # YAML 1.2 core: .inf and .nan are floats. Package spec §5.1: neither numbers nor strings to the schemas.
+    if _INF.match(value):
+        return float("-inf") if value.startswith("-") else float("inf")
+    if _NAN.match(value):
+        return float("nan")
     return value
 
 

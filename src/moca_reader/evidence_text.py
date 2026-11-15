@@ -179,13 +179,56 @@ def _js_number(x: float) -> float | int:
     return int(x) if float(x).is_integer() else x
 
 
+def occurrences(text: str, needle: str) -> list[int]:
+    """Every start index of ``needle`` in ``text``, overlapping ones included, in one linear pass (Knuth-Morris-Pratt)."""
+    m = len(needle)
+    if m == 0:
+        return []
+    fail = [0] * m
+    k = 0
+    for i in range(1, m):
+        while k > 0 and needle[i] != needle[k]:
+            k = fail[k - 1]
+        if needle[i] == needle[k]:
+            k += 1
+        fail[i] = k
+    out: list[int] = []
+    k = 0
+    for i, ch in enumerate(text):
+        while k > 0 and ch != needle[k]:
+            k = fail[k - 1]
+        if ch == needle[k]:
+            k += 1
+        if k == m:
+            out.append(i - m + 1)
+            k = fail[k - 1]
+    return out
+
+
+def _sparse_table(values: list[float], pick: Callable[[float, float], float]) -> Callable[[int, int], float]:
+    """A range-minimum (or maximum) table: query(lo, hi) over values[lo..hi] in O(1)."""
+    levels = [values]
+    w = 1
+    while 2 * w <= len(values):
+        prev = levels[-1]
+        levels.append([pick(prev[i], prev[i + w]) for i in range(len(prev) - w)])
+        w *= 2
+
+    def query(lo: int, hi: int) -> float:
+        k = (hi - lo + 1).bit_length() - 1
+        return pick(levels[k][lo], levels[k][hi - (1 << k) + 1])
+
+    return query
+
+
 def locate_quote(cues: list[Cue], window: tuple[float, float], quote: dict[str, Any]) -> tuple[float, float] | None:
     """Contract §7: where a refining quote is spoken in a time range.
 
     The covered text is the payloads of the cues the range overlaps, in file order, joined with LF, with each run of
-    white space as one space (the quote's parts too). Of every occurrence, the one whose cues span the shortest time
-    wins, the earliest on a tie. Returns the start of the first cue the quote's text is in and the end of the last, or
-    None when the quote is not in the covered text.
+    white space (the five ASCII characters) as one space, the quote's parts too. A cue is touched when a non-space
+    character of ``exact`` comes from it. Of every occurrence, the one whose touched cues span the shortest time wins,
+    the earliest on a tie. Returns the earliest start and the latest end of the touched cues, or None when the quote
+    is not in the covered text. Contract §3: linear in the covered text and the quote.
     """
     if not isinstance(quote.get("exact"), str):
         return None
@@ -194,7 +237,7 @@ def locate_quote(cues: list[Cue], window: tuple[float, float], quote: dict[str, 
         return _QUOTE_SPACE.sub(" ", v) if isinstance(v, str) else ""
 
     exact = part(quote["exact"])
-    if exact.strip(" ") == "":
+    if all(ch in _SPACE_CHARS for ch in exact):
         return None
     prefix = part(quote.get("prefix"))
     needle = prefix + exact + part(quote.get("suffix"))
@@ -212,19 +255,39 @@ def locate_quote(cues: list[Cue], window: tuple[float, float], quote: dict[str, 
                 chars.append(ch)
                 owner.append(i)
     text = "".join(chars)
+    n = len(owner)
+    # The owner of the first non-space character at or after each position, and of the last at or before it.
+    nxt = [-1] * (n + 1)
+    for i in range(n - 1, -1, -1):
+        nxt[i] = owner[i] if owner[i] >= 0 else nxt[i + 1]
+    prv = [-1] * n
+    for i in range(n):
+        prv[i] = owner[i] if owner[i] >= 0 else (prv[i - 1] if i > 0 else -1)
+    # Cues with text, in order: the touched cues of a span are those between its first and last owner.
+    rank = [-1] * len(covered)
+    filled: list[int] = []
+    for o in owner:
+        if o >= 0 and rank[o] < 0:
+            rank[o] = len(filled)
+            filled.append(o)
+    if not filled:
+        return None
+    earliest = _sparse_table([covered[c].start for c in filled], min)
+    latest = _sparse_table([covered[c].end for c in filled], max)
     best: tuple[float, float] | None = None
-    at = text.find(needle)
-    while at >= 0:
-        own = [o for o in owner[at + len(prefix) : at + len(prefix) + len(exact)] if o >= 0]
-        if own:
-            span = (covered[own[0]].start, covered[own[-1]].end)
-            if (
-                best is None
-                or span[1] - span[0] < best[1] - best[0]
-                or (span[1] - span[0] == best[1] - best[0] and span[0] < best[0])
-            ):
-                best = span
-        at = text.find(needle, at + 1)
+    for at in occurrences(text, needle):
+        a = at + len(prefix)
+        b = a + len(exact)
+        first, last = nxt[a], prv[b - 1]
+        if first < 0 or last < 0 or rank[first] > rank[last]:
+            continue
+        span = (earliest(rank[first], rank[last]), latest(rank[first], rank[last]))
+        if (
+            best is None
+            or span[1] - span[0] < best[1] - best[0]
+            or (span[1] - span[0] == best[1] - best[0] and span[0] < best[0])
+        ):
+            best = span
     return best
 
 

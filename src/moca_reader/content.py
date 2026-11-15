@@ -425,7 +425,15 @@ def _verify_evidence(
                 path = ref.transcript_path
                 duration = ref.duration
                 alt_sync = d.sync or default_sync()
-                to_ref = lambda window, s=alt_sync: range_to_reference(s, window)  # noqa: E731
+                alt_duration = d.duration
+
+                # An alternate's own duration bounds the range too, when it declares one.
+                def to_ref(
+                    window: tuple[float, float], s: list[dict[str, Any]] = alt_sync, dur: float | None = alt_duration
+                ) -> tuple[float, float] | None:
+                    if dur is not None and window[1] != float("inf") and window[1] > dur:
+                        return None
+                    return range_to_reference(s, window)
         elif path and source_kind(path) == "webvtt":
             duration = next((d.duration for d in media or [] if d.transcript == key), None)
         if not path:

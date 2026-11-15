@@ -143,3 +143,37 @@ def test_bindings_by_composition_stay_linear_in_work_and_state_size(tmp_path: Pa
     assert size < 1024 * 1024, f"package state is {size} bytes"
     assert seconds < 60, f"read and searched in {seconds:.1f} s"
     assert peak < 512 * 1024 * 1024, f"peak {peak // 1048576} MiB"
+
+
+def test_a_refined_quote_over_a_4_mib_transcript_is_located_in_linear_time() -> None:
+    from moca_reader.evidence_text import Cue, locate_quote
+
+    # 4,096 cues of 1 KiB each: "a a a ...". Quadratic searches took minutes here.
+    text = "a " * 512
+    cues = [Cue(float(i), float(i + 1), text) for i in range(4096)]
+    for exact in ["a", ("a " * 4096).strip()]:
+        started = time.perf_counter()
+        located = locate_quote(cues, (0.0, 4096.0), {"type": "TextQuoteSelector", "exact": exact})
+        seconds = time.perf_counter() - started
+        assert located is not None, f"quote of {len(exact)} characters found"
+        assert seconds < 60, f"{len(exact)}-character quote located in {seconds:.1f} s"
+
+
+def test_a_repeat_of_a_member_id_is_not_resolved(tmp_path: Path) -> None:
+    leaf = tmp_path / "pkgs" / "leaf"
+    _pkg(leaf, {"id": f"{ID}/leaf", "title": "Leaf"}, {"content/a.md": _node("Leaf")})
+    pin = _pin(leaf)
+    fakes = [{**pin, "digest": "sha256:" + str(i).rjust(64, "0")} for i in range(20)]
+    top = tmp_path / "top"
+    _pkg(top, {"id": f"{ID}/top", "title": "Top", "members": [pin, *fakes]})
+    resolver = directory_resolver([tmp_path / "pkgs"])
+    calls = 0
+
+    def counting(member: dict[str, Any]) -> str | None:
+        nonlocal calls
+        calls += 1
+        return resolver(member)
+
+    r = read_package(str(top), resolve_member=counting)
+    assert any(d.code == "M005_DUPLICATE_MEMBER" for d in r.diagnostics)
+    assert calls == 1, "only the first entry for the id is resolved"

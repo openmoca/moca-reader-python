@@ -6,6 +6,7 @@ own, and never acts on a location or setting a package supplies.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from collections.abc import Callable, Iterable
@@ -539,6 +540,7 @@ def _resolve_members(
     max_bytes = options.limits["maxMemberBytes"]
     # Cycles are detected by id@version: composing another version of the same package is not a cycle.
     own_key = f"{get(result.manifest, 'id')}@{get(result.manifest, 'version')}"
+    listed: set[str] = set()
     for member in members:
         if not truthy(get(member, "id")) or not truthy(get(member, "digest")):
             continue
@@ -546,6 +548,11 @@ def _resolve_members(
         result.members.append(entry)
         if options.resolve_member is None:
             continue
+        # Contract §3: a repeat of a member id (M005) is not resolved.
+        listed_key = json.dumps(member["id"], default=str)
+        if listed_key in listed:
+            continue
+        listed.add(listed_key)
         member_key = f"{member['id']}@{member.get('version')}"
         if member_key == own_key or member_key in stack:
             chain = " -> ".join(str(x) for x in [*stack, own_key, member_key])
@@ -561,7 +568,7 @@ def _resolve_members(
             )
             continue
         # Contract §3: a pin met again in the same read shares the first read's result and counts once.
-        pin = f"{member['id']}@{member.get('version')}#{member['digest']}"
+        pin = json.dumps([member["id"], member.get("version"), member["digest"]], default=str)
         if pin in budget.members:
             child = budget.members[pin]
         else:
