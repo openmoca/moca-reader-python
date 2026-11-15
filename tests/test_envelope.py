@@ -276,3 +276,11 @@ def test_the_plaintext_is_read_in_place_and_zeroed(monkeypatch: pytest.MonkeyPat
     [plain] = returned
     assert any(o is plain for o in opened), "the plaintext was copied before it was opened"
     assert len(plain) > 0 and not any(plain)
+
+
+def test_an_opened_envelope_has_no_source() -> None:
+    """Its decrypted archive is zeroed after reading, so there is nothing left to read from."""
+    r = read_package(ENVELOPES / "x25519.moca.enc", **with_key(TEST_KEY))
+    assert r.valid and r.source is None
+    unopened = read_package(ENVELOPES / "x25519.moca.enc")
+    assert unopened.source is not None

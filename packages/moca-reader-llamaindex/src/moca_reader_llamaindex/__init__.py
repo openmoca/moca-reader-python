@@ -21,7 +21,7 @@ from llama_index.core.schema import NodeWithScore, QueryBundle, TextNode
 from moca_reader import CitationRecord, Search, flat_metadata
 
 __all__ = ["MocaRetriever", "node_id", "to_node"]
-__version__ = "0.6.0"
+__version__ = "0.7.0"
 
 
 def node_id(record: CitationRecord) -> str:

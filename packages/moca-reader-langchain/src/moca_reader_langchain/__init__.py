@@ -21,7 +21,7 @@ from pydantic import ConfigDict
 from moca_reader import CitationRecord, Search, flat_metadata
 
 __all__ = ["MocaRetriever", "document_id", "to_document"]
-__version__ = "0.6.0"
+__version__ = "0.7.0"
 
 
 def document_id(record: CitationRecord) -> str:

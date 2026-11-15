@@ -109,6 +109,7 @@ class PackageResult:
     envelope: dict[str, Any] | None = None
     payload_manifest: str | None = None
     structure: PackageStructure | None = None
+    # Where the package was read from. None for an opened envelope: its decrypted archive is zeroed after reading.
     source: PackageSource | None = None
 
     @property
@@ -133,7 +134,7 @@ class _Options:
     decryptor: Decryptor | None = None
 
 
-MOCA_VERSION = "0.6"
+MOCA_VERSION = "0.7"
 """The specification version this Reader implements, ``major.minor`` (package spec §14)."""
 
 

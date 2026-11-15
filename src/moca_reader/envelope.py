@@ -277,6 +277,8 @@ def read_envelope(
         diagnostics.items.extend(inner.diagnostics)
         return finish(result, diagnostics)
     inner.envelope = {"format": fmt, "opened": True}
+    # The decrypted archive has been zeroed, so an opened envelope has no source to read from.
+    inner.source = None
     return inner
 
 

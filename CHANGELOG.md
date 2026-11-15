@@ -2,7 +2,7 @@
 
 All notable changes to `moca-reader`. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [0.7.0] - 2026-11-15
 
 For moca-spec 0.7.0 ([moca-spec#5](https://github.com/openmoca/moca-spec/issues/5) and
 [moca-spec#7](https://github.com/openmoca/moca-spec/issues/7) and
@@ -29,8 +29,9 @@ For moca-spec 0.7.0 ([moca-spec#5](https://github.com/openmoca/moca-spec/issues/
   impossible), and the payload is decrypted into one preallocated
   `bytearray`, returned without a copy. The header is parsed from its first
   64 KiB only. Archive bytes given as a target (a `bytearray` or
-  `memoryview` too) are read in place, and the decrypted archive is zeroed
-  once its entries have been read.
+  `memoryview` too) are read in place, so the host must not change them
+  during the read. The decrypted archive is zeroed once its entries have been
+  read, and an opened envelope's `result.source` is `None`.
 - A key provider's error message never appears in a diagnostic; only its type.
 - Key material and partial plaintext held in `bytearray`s are zeroed after
   use (immutable `bytes` cannot be).

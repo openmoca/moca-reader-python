@@ -35,7 +35,7 @@ from .strategies.ontology_guided import ontology_guided
 from .structure import structure_view
 from .structure_ops import StructureIndex
 
-__version__ = "0.6.0"
+__version__ = "0.7.0"
 
 __all__ = [
     "CODES",
