@@ -15,10 +15,12 @@ For moca-spec 0.7.0 ([moca-spec#5](https://github.com/openmoca/moca-spec/issues/
   as cancellation do): an unexpected failure is `E006` while parsing the
   header and `E002` after.
 - `limits["maxScryptWorkFactor"]` must be an integer from 1 to 22
-  (`ValueError` otherwise); `parse_header` refuses any other value too.
+  (`ValueError` otherwise, when `read_package` or `bind_envelope_sidecar`
+  starts); `parse_header` refuses any other value too. A custom decryptor's
+  error is mapped by its `kind` only when that is a string.
 - The key provider's result is checked (`moca_reader.age.check_key`): not a
-  mapping is `E001`; a member of the wrong type or a file key that is not 16
-  bytes is `E002`. The spec's `fileKey` is accepted as well as `file_key`.
+  mapping is `E001`; a member of the wrong type (`identities: None` among
+  them) or a file key that is not 16 bytes is `E002`. The spec's `fileKey` is accepted as well as `file_key`.
   The provider is synchronous, as `read_package` is: an awaitable result is
   refused (`E001`). A result with several kinds is tried identities,
   passphrase, then file key (`find_file_key`).
@@ -26,7 +28,9 @@ For moca-spec 0.7.0 ([moca-spec#5](https://github.com/openmoca/moca-spec/issues/
   decryption (`plaintext_length`: `T003` over `maxBytes`, `E003` when
   impossible), and the payload is decrypted into one preallocated
   `bytearray`, returned without a copy. The header is parsed from its first
-  64 KiB only.
+  64 KiB only. Archive bytes given as a target (a `bytearray` or
+  `memoryview` too) are read in place, and the decrypted archive is zeroed
+  once its entries have been read.
 - A key provider's error message never appears in a diagnostic; only its type.
 - Key material and partial plaintext held in `bytearray`s are zeroed after
   use (immutable `bytes` cannot be).

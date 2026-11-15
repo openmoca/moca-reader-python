@@ -299,6 +299,9 @@ def check_key(key: object) -> AgeKey:
         raise AgeError("noKey", "the key provider returned an awaitable; this binding takes a synchronous provider")
     if not isinstance(key, Mapping):
         raise AgeError("noKey", "the key provider returned no key")
+    if "identities" in key and key["identities"] is None:
+        # The same code as in the other Readers: a key was supplied, and it cannot be used (E002).
+        raise AgeError("noMatch", "the key provider returned identities that are null")
     identities = key.get("identities")
     passphrase = key.get("passphrase")
     file_key = key.get("file_key", key.get("fileKey"))

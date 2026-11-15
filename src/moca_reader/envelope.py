@@ -128,6 +128,20 @@ def outline_mismatch(
     return None
 
 
+def check_work_factor_limit(limits: Mapping[str, Any]) -> None:
+    """Reader contract §3: ``maxScryptWorkFactor`` is an integer from 1 to 22; anything else is a host error
+    (ValueError). Checked when a read starts, and again before each encrypted entry."""
+    wf = {**DEFAULT_LIMITS, **limits}["maxScryptWorkFactor"]
+    if not isinstance(wf, int) or isinstance(wf, bool) or not 1 <= wf <= 22:
+        raise ValueError(f"limits['maxScryptWorkFactor'] must be an integer from 1 to 22, not {wf!r}")
+
+
+def wipe_plaintext(plain: object) -> None:
+    """Zeroes decrypted bytes once they have been read (F6). Immutable bytes cannot be zeroed."""
+    if isinstance(plain, bytearray):
+        plain[:] = bytes(len(plain))
+
+
 def open_age_entry(
     data: bytes,
     file: str,
@@ -138,10 +152,7 @@ def open_age_entry(
 ) -> tuple[bytes | bytearray | None, str | None, str | None]:
     """Steps 3-6 of encrypted packages §5.2 for one encrypted entry: (plaintext, code, message)."""
     lim = {**DEFAULT_LIMITS, **limits}
-    # Reader contract §3: the limit is an integer from 1 to 22; anything else is a host error.
-    wf = lim["maxScryptWorkFactor"]
-    if not isinstance(wf, int) or isinstance(wf, bool) or not 1 <= wf <= 22:
-        raise ValueError(f"limits['maxScryptWorkFactor'] must be an integer from 1 to 22, not {wf!r}")
+    check_work_factor_limit(lim)
     if decryptor is None:
         return None, "E001_ENCRYPTED_NO_KEY", "this Reader was not given a decryptor, so it does not open envelopes"
     try:
@@ -173,7 +184,9 @@ def _failure(err: Exception, file: str, fallback: str) -> tuple[None, str, str]:
     """Encrypted packages §5.1: nothing from opening an envelope is raised to the caller. A decryptor's own failure
     maps to its code; anything else to the step's code, with its type name only. (Cancellation, KeyboardInterrupt
     and other BaseExceptions are not caught.)"""
-    code = _AGE_CODES.get(getattr(err, "kind", ""))
+    kind = getattr(err, "kind", None)
+    # A custom decryptor's kind may be any object, even an unhashable one: only a string is looked up.
+    code = _AGE_CODES.get(kind) if isinstance(kind, str) else None
     if code is not None:
         return None, code, f"{file}.age: {err}"
     return None, fallback, f"{file}.age: the decryptor failed ({type(err).__name__})"
@@ -251,7 +264,11 @@ def read_envelope(
         return fail(code, message, PACKAGE_AGE)
 
     # Steps 7-10, with the outline check (step 8) right after the inner manifest is read.
-    inner = read_inner(plain, EnvelopeCheck(outline, structure, cover))
+    try:
+        inner = read_inner(plain, EnvelopeCheck(outline, structure, cover))
+    finally:
+        # Every inner entry has been copied out by now: the decrypted archive itself is not kept.
+        wipe_plaintext(plain)
     failed = inner.manifest is None or any(
         d.severity == "error" and (d.code[0] in "TP" or d.code == "E004_OUTLINE_MISMATCH") for d in inner.diagnostics
     )
@@ -280,6 +297,7 @@ def bind_envelope_sidecar(
     from .sidecar import SidecarBinding, bind_sidecar
     from .source import TargetError, open_source
 
+    check_work_factor_limit(limits or {})
     diagnostics = Diagnostics(strict)
     out = SidecarBinding(diagnostics=diagnostics.items)
     envelope = getattr(pkg, "envelope", None) or {}
@@ -305,7 +323,10 @@ def bind_envelope_sidecar(
         assert code is not None and message is not None
         diagnostics.add(code, message, INDEX_AGE)
         return out
-    bound = bind_sidecar(plain, pkg, strict)
+    try:
+        bound = bind_sidecar(plain, pkg, strict)
+    finally:
+        wipe_plaintext(plain)
     diagnostics.items.extend(bound.diagnostics)
     bound.diagnostics = diagnostics.items
     return bound

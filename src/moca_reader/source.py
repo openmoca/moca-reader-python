@@ -8,6 +8,7 @@ package and are skipped, with their subtrees.
 
 from __future__ import annotations
 
+import io
 import os
 import stat
 import zipfile
@@ -177,13 +178,45 @@ def _entry_name(info: zipfile.ZipInfo) -> str:
     return info.orig_filename
 
 
-def archive_source(archive: str | os.PathLike[str] | bytes, limits: dict[str, int] | None = None) -> PackageSource:
-    """Opens a .moca/.zip archive in memory, without extracting it."""
-    lim = {**DEFAULT_LIMITS, **(limits or {})}
-    try:
-        import io
+class _BufferFile(io.RawIOBase):
+    """A read-only, seekable file over a buffer, without copying it (io.BytesIO copies a bytearray)."""
 
-        zf = zipfile.ZipFile(io.BytesIO(archive) if isinstance(archive, bytes) else os.fspath(archive))
+    def __init__(self, buffer: bytes | bytearray | memoryview) -> None:
+        super().__init__()
+        self._view = memoryview(buffer).cast("B")
+        self._pos = 0
+
+    def readable(self) -> bool:
+        return True
+
+    def seekable(self) -> bool:
+        return True
+
+    def readinto(self, b: Any) -> int:
+        n = max(0, min(len(b), len(self._view) - self._pos))
+        b[:n] = self._view[self._pos : self._pos + n]
+        self._pos += n
+        return n
+
+    def seek(self, offset: int, whence: int = io.SEEK_SET) -> int:
+        base = {io.SEEK_SET: 0, io.SEEK_CUR: self._pos, io.SEEK_END: len(self._view)}[whence]
+        if base + offset < 0:
+            raise ValueError("negative seek position")
+        self._pos = base + offset
+        return self._pos
+
+    def tell(self) -> int:
+        return self._pos
+
+
+def archive_source(
+    archive: str | os.PathLike[str] | bytes | bytearray | memoryview, limits: dict[str, int] | None = None
+) -> PackageSource:
+    """Opens a .moca/.zip archive in memory, without extracting it. A buffer is read in place."""
+    lim = {**DEFAULT_LIMITS, **(limits or {})}
+    in_memory = isinstance(archive, (bytes, bytearray, memoryview))
+    try:
+        zf = zipfile.ZipFile(_BufferFile(archive) if in_memory else os.fspath(archive))  # type: ignore[arg-type]
         infos = zf.infolist()
     except (zipfile.BadZipFile, OSError, ValueError) as err:
         raise TargetError("T003_ARCHIVE_REJECTED", f"archive could not be opened: {err}") from err
@@ -233,7 +266,7 @@ def archive_source(archive: str | os.PathLike[str] | bytes, limits: dict[str, in
             raise OSError(f"entry is {len(data)} bytes, not the {info.file_size} its header declares")
         return data
 
-    location = None if isinstance(archive, bytes) else os.fspath(archive)
+    location = None if in_memory else os.fspath(archive)  # type: ignore[arg-type]
     source = PackageSource("archive", lambda: listed, read, location)
     source.hidden_entries = hidden
     return source
@@ -290,8 +323,9 @@ def open_source(target: Any, limits: dict[str, int] | None = None) -> PackageSou
     if not isinstance(target, (str, os.PathLike)) and callable(getattr(target, "list", None)):
         return host_source(target, limits)
     # Interface §3: archive bytes are a target too.
+    # A bytearray or memoryview (decrypted bytes) is read in place, never copied.
     if isinstance(target, (bytes, bytearray, memoryview)):
-        return archive_source(bytes(target), limits)
+        return archive_source(target, limits)
     if not isinstance(target, (str, os.PathLike)) or not os.path.exists(target):
         raise TargetError("T001_TARGET_NOT_FOUND", f"target does not exist: {target}")
     path = os.fspath(target)

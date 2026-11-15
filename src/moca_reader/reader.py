@@ -30,7 +30,15 @@ from .attestations import (
 from .content import ContentNode, read_content
 from .diagnostics import Diagnostic, Diagnostics
 from .digest import ATTESTATIONS_DIR, MANIFEST, compute_digest, package_files
-from .envelope import Decryptor, EnvelopeCheck, KeyProvider, is_envelope, outline_mismatch, read_envelope
+from .envelope import (
+    Decryptor,
+    EnvelopeCheck,
+    KeyProvider,
+    check_work_factor_limit,
+    is_envelope,
+    outline_mismatch,
+    read_envelope,
+)
 from .issued_copy import IssuedCopyCheck, check_issued_copy
 from .manifest import check_catalogue, check_manifest
 from .profiles import KNOWN_PROFILES
@@ -163,6 +171,8 @@ def read_package(
     Encrypted packages: pass ``decryptor=AGE_DECRYPTOR`` (from ``moca_reader.age``) and a ``key_provider`` to open
     envelopes. Without a decryptor, an envelope is reported with E001 and nothing inside it is exposed.
     """
+    # Reader contract §3: an invalid limit is a host error, raised when the read starts.
+    check_work_factor_limit(limits or {})
     options = _Options(
         TrustRoot.load(trust_root) if trust_root is not None else None,
         resolve_member,

@@ -211,3 +211,68 @@ def test_file_key_by_either_name() -> None:
             ENVELOPES / "x25519.moca.enc", decryptor=AGE_DECRYPTOR, key_provider=lambda _r, n=name: {n: bytes(key)}
         )
         assert r.valid, name
+
+
+def test_a_work_factor_limit_is_checked_when_the_read_starts() -> None:
+    """Reader contract §3: an invalid limit is a host error even when no envelope is read."""
+    plain = MOCA_SPEC / "examples" / "support-kb"
+    with pytest.raises(ValueError):
+        read_package(plain, limits={"maxScryptWorkFactor": 40})
+    with pytest.raises(ValueError):
+        bind_envelope_sidecar(ENVELOPES / "x25519.moca.enc", None, limits={"maxScryptWorkFactor": 0})
+
+
+def test_null_identities_are_e002() -> None:
+    """The same code in every Reader: a key was supplied, and it cannot be used."""
+    r = read_package(
+        ENVELOPES / "x25519.moca.enc", decryptor=AGE_DECRYPTOR, key_provider=lambda _r: {"identities": None}
+    )
+    assert [d.code for d in r.diagnostics] == ["E002_DECRYPTION_FAILED"]
+
+
+def test_a_decryptor_error_with_an_unhashable_kind_is_mapped_not_raised() -> None:
+    class Odd(Exception):
+        def __init__(self) -> None:
+            super().__init__("odd")
+            self.kind: Any = ["header"]
+
+    class OddDecryptor(_Boom):
+        def parse_header(self, data: bytes, max_scrypt_work_factor: int = 20) -> Any:
+            raise Odd()
+
+    key = with_key(TEST_KEY)["key_provider"]
+    r = read_package(ENVELOPES / "x25519.moca.enc", decryptor=OddDecryptor(True), key_provider=key)
+    assert [d.code for d in r.diagnostics] == ["E006_AGE_HEADER_INVALID"]
+
+
+def test_the_plaintext_is_read_in_place_and_zeroed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """F4 and F6: the decrypted archive is opened without a copy, and zeroed once its entries are read."""
+    from moca_reader import source as source_module
+
+    returned: list[bytearray] = []
+    opened: list[object] = []
+
+    class Keep(_Boom):
+        def parse_header(self, data: bytes, max_scrypt_work_factor: int = 20) -> Any:
+            return AGE_DECRYPTOR.parse_header(data, max_scrypt_work_factor)
+
+        def decrypt(self, data: bytes, header: Any, key: Any, max_bytes: int | None = None) -> bytes:
+            plain = AGE_DECRYPTOR.decrypt(data, header, key, max_bytes)
+            assert isinstance(plain, bytearray)
+            returned.append(plain)
+            return plain
+
+    real = source_module.archive_source
+
+    def spy(archive: Any, limits: Any = None) -> Any:
+        opened.append(archive)
+        return real(archive, limits)
+
+    monkeypatch.setattr(source_module, "archive_source", spy)
+    r = read_package(
+        ENVELOPES / "x25519.moca.enc", decryptor=Keep(False), key_provider=with_key(TEST_KEY)["key_provider"]
+    )
+    assert r.valid
+    [plain] = returned
+    assert any(o is plain for o in opened), "the plaintext was copied before it was opened"
+    assert len(plain) > 0 and not any(plain)
