@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "moca-reader"
 version = "0.7.0"
-description = "Reads, verifies, searches and cites MOCA packages (moca-spec 0.6)."
+description = "Reads, verifies, searches and cites MOCA packages (moca-spec 0.7)."
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]

@@ -1,0 +1,76 @@
+name: Release
+
+# Push a vX.Y.Z tag on a commit in main: builds moca-reader and its bindings, and publishes them to PyPI,
+# moca-reader first, then moca-reader-langchain and moca-reader-llamaindex, which pin it at the same version.
+#
+# Trusted publishing: PyPI accepts this workflow, in the `release` environment, through a short-lived
+# OIDC token from GitHub Actions. There is no PyPI token in this repository. The upload action also
+# publishes a signed attestation for each file.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v6
+      - name: The tag is on main and every version matches it
+        run: |
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || { echo "::error::$GITHUB_REF_NAME is not on main"; exit 1; }
+          want="${GITHUB_REF_NAME#v}"
+          for f in pyproject.toml packages/*/pyproject.toml; do
+            v=$(sed -n 's/^version = "\(.*\)"/\1/p' "$f")
+            [ "$v" = "$want" ] || { echo "::error::$f is $v, the tag is $GITHUB_REF_NAME"; exit 1; }
+          done
+          grep -q "^__version__ = \"$want\"" src/moca_reader/__init__.py || { echo "::error::__version__ does not match $GITHUB_REF_NAME"; exit 1; }
+          for f in packages/*/pyproject.toml; do
+            grep -q "\"moca-reader==$want\"" "$f" || { echo "::error::$f does not pin moca-reader==$want"; exit 1; }
+          done
+      - run: uv build --package moca-reader -o dist/reader
+      - run: |
+          uv build --package moca-reader-langchain -o dist/bindings
+          uv build --package moca-reader-llamaindex -o dist/bindings
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  reader:
+    name: Publish moca-reader
+    needs: build
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/reader/
+
+  bindings:
+    name: Publish the bindings
+    needs: reader
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/bindings/

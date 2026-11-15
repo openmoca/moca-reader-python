@@ -166,10 +166,12 @@ node tests/parity/parity.mjs
 2. Point the `MOCA_*_REF` pins in `.github/workflows/test.yml` at the release tags
    ([moca-spec docs/releasing.md](https://github.com/openmoca/moca-spec/blob/main/docs/releasing.md#moving-the-pins)).
 3. The tests, corpus and parity pass.
-4. Tag `vX.Y.Z` and publish a GitHub release whose notes are the changelog
-   section.
-5. `uv build --all-packages` and `uv publish` from the tagged commit: `moca-reader`
-   first, then its bindings, which release at the same version.
+4. Merge to main, tag `vX.Y.Z` on main and push the tag. The release workflow
+   (`.github/workflows/release.yml`) checks that every version matches the tag,
+   builds the three packages, and publishes them to PyPI through trusted
+   publishing: `moca-reader` first, then its bindings, which release at the
+   same version. No PyPI token is kept anywhere.
+5. Publish a GitHub release whose notes are the changelog section.
 
 ## Licence
 
