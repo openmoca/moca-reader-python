@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any
 from ._js import decode_uri_component, get, js_sorted, js_trim, posix_dirname, posix_join, utf16_key
 from .alternates import default_sync, range_to_reference, sync_problem
 from .diagnostics import Diagnostics
-from .evidence_text import check_selector, is_media_time_range, normalised_text, source_kind
+from .evidence_text import check_selector, is_media_time_range, normalised_text, source_kind, webvtt
 from .frontmatter import split_frontmatter
 from .schemas import validate_against
 from .unicode import normalize
@@ -91,10 +91,13 @@ def read_content(
     file_digests: dict[str, str],
     diagnostics: Diagnostics,
     limits: dict[str, int],
+    evidence_budget: dict[str, int] | None = None,
 ) -> list[ContentNode]:
     source_text: dict[str, str] = {}
-    # Contract §3: a per-package budget of evidence checks and of source bytes scanned.
-    budget: dict[str, Any] = {"checks": 0, "bytes": 0, "prepared": {}}
+    # Contract §3: one budget of evidence checks and of source bytes scanned, shared by the package and its members
+    # (`shared`); each source is normalised, and its cues parsed, once per package (`prepared`, `cues`).
+    shared = evidence_budget if evidence_budget is not None else {"checks": 0, "bytes": 0}
+    budget: dict[str, Any] = {"shared": shared, "prepared": {}, "cues": {}}
     declared = manifest.get("locales")
     locales = {str(loc).lower(): loc for loc in (declared if isinstance(declared, list) else [])}
     by_key: dict[str, ContentNode] = {}
@@ -446,25 +449,32 @@ def _verify_evidence(
         if i >= limits["maxEvidencePerNode"] or len(data[path]) > limits["maxSourceBytesChecked"]:
             checks.append(EvidenceCheck(True))
             continue
+        shared = budget["shared"]
         if (
-            budget["checks"] >= limits["maxEvidenceChecksPerPackage"]
-            or budget["bytes"] + len(data[path]) > limits["maxEvidenceBytesPerPackage"]
+            shared["checks"] >= limits["maxEvidenceChecksPerPackage"]
+            or shared["bytes"] + len(data[path]) > limits["maxEvidenceBytesPerPackage"]
         ):
             checks.append(EvidenceCheck(True))
             continue
-        budget["checks"] += 1
-        budget["bytes"] += len(data[path])
+        shared["checks"] += 1
+        shared["bytes"] += len(data[path])
         if path not in source_text:
             # Contract §7: a leading byte order mark is not part of an evidence source.
             source_text[path] = data[path].decode("utf-8", errors="replace").removeprefix("\ufeff")
         prepared = None
-        if selector.get("type") != "FragmentSelector":
+        cues = None
+        if selector.get("type") == "FragmentSelector":
+            if kind == "webvtt":
+                if path not in budget["cues"]:
+                    budget["cues"][path] = webvtt(source_text[path])[0]
+                cues = budget["cues"][path]
+        else:
             key = f"{path}\u0000{kind}"
             if key not in budget["prepared"]:
                 budget["prepared"][key] = normalised_text(source_text[path], kind)
             prepared = budget["prepared"][key]
         report: dict[str, Any] = {}
-        matched = check_selector(selector, source_text[path], kind, prepared, duration, to_ref, report)
+        matched = check_selector(selector, source_text[path], kind, prepared, duration, to_ref, report, cues)
         if matched is False:
             diagnostics.add(
                 "C011_EVIDENCE_SELECTOR_UNMATCHED",

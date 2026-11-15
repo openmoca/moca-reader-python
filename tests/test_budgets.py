@@ -177,3 +177,34 @@ def test_a_repeat_of_a_member_id_is_not_resolved(tmp_path: Path) -> None:
     r = read_package(str(top), resolve_member=counting)
     assert any(d.code == "M005_DUPLICATE_MEMBER" for d in r.diagnostics)
     assert calls == 1, "only the first entry for the id is resolved"
+
+
+def test_a_package_and_its_members_share_one_evidence_budget(tmp_path: Path) -> None:
+    def files(title: str) -> dict[str, str]:
+        node = (
+            f"---\ntype: Note\ntitle: {title}\nsources:\n  - {{ id: s, resource: ../sources/s.txt }}\nmoca:\n"
+            "  evidence:\n    - { source: s, selector: { type: TextQuoteSelector, exact: the tide turns } }\n"
+            f"---\n# {title}\n"
+        )
+        return {"content/a.md": node, "sources/s.txt": "Here the tide turns at noon."}
+
+    pkgs = tmp_path / "pkgs"
+    _pkg(pkgs / "member", {"id": f"{ID}/member", "title": "Member"}, files("Member"))
+    top = tmp_path / "top"
+    _pkg(top, {"id": f"{ID}/top", "title": "Top", "members": [_pin(pkgs / "member")]}, files("Top"))
+    resolver = directory_resolver([pkgs])
+
+    def matched(r: Any) -> bool | None:
+        check: bool | None = r.nodes[0].representations[0].evidence_checks[0].matched
+        return check
+
+    full = read_package(str(top), resolve_member=resolver)
+    assert full.members[0].result is not None
+    assert matched(full) is True
+    assert matched(full.members[0].result) is True
+
+    # One check in all: the composing package spends it, so its member's evidence is not checked.
+    one = read_package(str(top), resolve_member=resolver, limits={"maxEvidenceChecksPerPackage": 1})
+    assert one.members[0].result is not None
+    assert matched(one) is True
+    assert matched(one.members[0].result) is None

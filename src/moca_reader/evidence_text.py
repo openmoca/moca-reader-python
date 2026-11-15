@@ -299,8 +299,12 @@ def check_selector(
     duration: float | None = None,
     to_reference: Callable[[tuple[float, float]], tuple[float, float] | None] | None = None,
     report: dict[str, Any] | None = None,
+    cues: list[Cue] | None = None,
 ) -> bool | None:
-    """Checks one selector against a source's raw text; None when it cannot be checked against this source."""
+    """Checks one selector against a source's raw text; None when it cannot be checked against this source.
+
+    ``cues`` are the source's WebVTT cues, when the caller has parsed them already.
+    """
     if selector.get("type") == "FragmentSelector":
         conforms = selector.get("conformsTo")
         if not _MEDIA_FRAGMENTS.match(conforms if isinstance(conforms, str) else "") or kind != "webvtt":
@@ -310,12 +314,15 @@ def check_selector(
         window = to_reference(parsed) if parsed is not None and to_reference is not None else parsed
         if window is None:
             return False
-        cues = webvtt(raw)[0]
+        if cues is None:
+            cues = webvtt(raw)[0]
         if not any(window[0] < c.end and window[1] > c.start for c in cues):
             return False
         # Contract §7: the range lies within the media, bounded by the latest cue end or the declared duration.
         if window[1] != float("inf"):
-            bound = max([c.end for c in cues] + ([duration] if duration is not None else []))
+            bound = max((c.end for c in cues), default=float("-inf"))
+            if duration is not None:
+                bound = max(bound, duration)
             if window[1] > bound:
                 return False
         # Contract §7: a range refined by a quote matches only when the quote is in the cues it covers.

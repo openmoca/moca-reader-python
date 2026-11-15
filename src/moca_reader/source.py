@@ -28,7 +28,7 @@ DEFAULT_LIMITS: dict[str, int] = {
     "maxTriples": 100_000,
     "maxEvidencePerNode": 256,
     "maxSourceBytesChecked": 8 * 1024 * 1024,
-    # Contract §3: evidence work for the whole package is bounded too.
+    # Contract §3: evidence work for the whole read, the package and all its members together, is bounded too.
     "maxEvidenceChecksPerPackage": 10_000,
     "maxEvidenceBytesPerPackage": 256 * 1024 * 1024,
     # Contract §3 and package spec §7.1: composition is bounded in depth and in members resolved per read.

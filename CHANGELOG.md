@@ -45,6 +45,11 @@ For moca-spec 0.7.0 ([moca-spec#5](https://github.com/openmoca/moca-spec/issues/
 - `Library.search` takes `up_to`.
 - Frontmatter whose `sources` has two entries with the same `id` is `C002_FRONTMATTER_INVALID` (package spec
   §5.1), so the node is not read. Before, this Reader used the last entry.
+- Contract §3: the evidence budgets (`maxEvidenceChecksPerPackage`, `maxEvidenceBytesPerPackage`) cover the whole
+  read, so a package and its members share them. Each transcript's cues are parsed once per package, not once per
+  time range checked.
+- An integer too large for a finite double, in decimal, octal or hex, is read as `.inf` is (package spec §5.1);
+  reading it never raises.
 
 ### Changed (encrypted packages: hardening)
 

@@ -199,6 +199,8 @@ class _ReadBudget:
     resolved: int = 0
     bytes: int = 0
     members: dict[str, PackageResult | None] = field(default_factory=dict)
+    # The evidence checks and source bytes scanned, shared by the package and every member it reads.
+    evidence: dict[str, int] = field(default_factory=lambda: {"checks": 0, "bytes": 0})
 
 
 def _read(
@@ -298,7 +300,13 @@ def _read(
         result.digest, result.file_digests, result.payload_manifest = digest, file_digests, payload_manifest
 
     result.nodes = read_content(
-        manifest if isinstance(manifest, dict) else {}, files, data, result.file_digests, diagnostics, options.limits
+        manifest if isinstance(manifest, dict) else {},
+        files,
+        data,
+        result.file_digests,
+        diagnostics,
+        options.limits,
+        budget.evidence,
     )
     result.structure = read_structure(data, result.nodes, diagnostics, options.limits, result.digest)
     # Package spec §4.10: readingOrder resolves against the package's own structure.ttl only.

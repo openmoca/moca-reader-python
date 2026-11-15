@@ -83,6 +83,20 @@ def _error(message: str, event: Any) -> _Error:
     return _Error(None, None, message, event.start_mark)
 
 
+def _integer(text: str, digits: str, base: int) -> int | float:
+    """An integer of any length. Package spec §5.1: one too large for a finite double is non-finite, as 1e400 is."""
+    try:
+        number = int(digits, base)
+    except ValueError:
+        # Python limits decimal integers to 4,300 digits; a float reads any length.
+        return float(text)
+    try:
+        float(number)
+    except OverflowError:
+        return float("-inf") if number < 0 else float("inf")
+    return number
+
+
 def _resolve(event: yaml.ScalarEvent) -> Any:
     value = event.value
     # Quoted and block scalars, and explicitly tagged strings, are always strings.
@@ -93,11 +107,11 @@ def _resolve(event: yaml.ScalarEvent) -> Any:
     if _BOOL.match(value):
         return value.lower() == "true"
     if _INT.match(value):
-        return int(value)
+        return _integer(value, value, 10)
     if _OCT.match(value):
-        return int(value[2:], 8)
+        return _integer(value, value[2:], 8)
     if _HEX.match(value):
-        return int(value[2:], 16)
+        return _integer(value, value[2:], 16)
     if _FLOAT.match(value):
         return float(value)
     # YAML 1.2 core: .inf and .nan are floats. Package spec §5.1: neither numbers nor strings to the schemas.
