@@ -334,7 +334,7 @@ def open_source(target: Any, limits: dict[str, int] | None = None) -> PackageSou
         return directory_source(path, limits)
     if os.path.isfile(path) and path.lower().endswith((".moca", ".zip")):
         return archive_source(path, limits)
-    # Encrypted packages §2: an envelope (conventionally .moca.enc) is recognised by content, so any file that starts
+    # Encrypted packages §2: an envelope (conventionally .mocae) is recognised by content, so any file that starts
     # with a Zip signature is read as an archive.
     if os.path.isfile(path) and _starts_with_zip_signature(path):
         return archive_source(path, limits)

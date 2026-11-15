@@ -247,7 +247,7 @@ def test_envelope_fixtures_match_go_age() -> None:
     identities = [line for line in identity_file.read_text().splitlines() if line.startswith("AGE-SECRET-KEY-1")]
     passphrase = "moca-conformance-INSECURE-passphrase"
     compared = 0
-    for path in sorted(ENVELOPES.glob("*.moca.enc")):
+    for path in sorted(ENVELOPES.glob("*.mocae")):
         with zipfile.ZipFile(path) as z:
             if "package.age" not in z.namelist():
                 continue
@@ -266,7 +266,7 @@ def test_envelope_fixtures_match_go_age() -> None:
         except AgeError:
             ours = None
         # MOCA's own limit: a header over 64 KiB is E006 here, and Go age has no such limit.
-        if path.name == "header-over-64k.moca.enc":
+        if path.name == "header-over-64k.mocae":
             assert ours is None and go.returncode == 0
             compared += 1
             continue
