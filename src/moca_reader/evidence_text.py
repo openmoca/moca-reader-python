@@ -158,7 +158,17 @@ def selector_matches(selector: Any, text: str) -> bool | None:
     return None
 
 
-def check_selector(selector: dict[str, Any], raw: str, kind: str, prepared: str | None = None) -> bool | None:
+def is_media_time_range(selector: Any) -> bool:
+    """A FragmentSelector that conforms to Media Fragments: a time range in audio or video."""
+    if not isinstance(selector, dict) or selector.get("type") != "FragmentSelector":
+        return False
+    conforms = selector.get("conformsTo")
+    return bool(_MEDIA_FRAGMENTS.match(conforms if isinstance(conforms, str) else ""))
+
+
+def check_selector(
+    selector: dict[str, Any], raw: str, kind: str, prepared: str | None = None, duration: float | None = None
+) -> bool | None:
     """Checks one selector against a source's raw text; None when it cannot be checked against this source."""
     if selector.get("type") == "FragmentSelector":
         conforms = selector.get("conformsTo")
@@ -167,7 +177,14 @@ def check_selector(selector: dict[str, Any], raw: str, kind: str, prepared: str 
         window = media_time_range(selector.get("value"))
         if window is None:
             return False
-        return any(window[0] < c.end and window[1] > c.start for c in webvtt(raw)[0])
+        cues = webvtt(raw)[0]
+        if not any(window[0] < c.end and window[1] > c.start for c in cues):
+            return False
+        # Contract §7: the range lies within the media, bounded by the latest cue end or the declared duration.
+        if window[1] == float("inf"):
+            return True
+        bound = max([c.end for c in cues] + ([duration] if duration is not None else []))
+        return window[1] <= bound
     # The quote is normalised as the source is, so markup in either never decides a match.
     quote = _normalise_quote(selector, kind) if selector.get("type") == "TextQuoteSelector" else selector
     return selector_matches(quote, prepared if prepared is not None else normalised_text(raw, kind))

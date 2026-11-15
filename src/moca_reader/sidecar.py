@@ -6,7 +6,7 @@ import struct
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from ._js import get, js_trim, json_loads, posix_normalize, truthy
+from ._js import get, js_string, js_trim, json_loads, posix_normalize, truthy
 from .content import Representation
 from .diagnostics import Diagnostic, Diagnostics
 from .digest import utf8
@@ -65,7 +65,15 @@ def bind_sidecar(target: Any, pkg: PackageResult, strict: bool = False) -> Sidec
             SIDECAR_MANIFEST,
         )
         return out
-    if target_ref.get("digest") != pkg.digest:
+    # Sidecar spec §5: an issued copy binds through the original digest it verified with.
+    copy = (
+        pkg.issued_copy
+        if pkg.issued_copy is not None
+        and target_ref.get("digest") == pkg.issued_copy.get("originalDigest")
+        and target_ref.get("digest") != pkg.digest
+        else None
+    )
+    if target_ref.get("digest") != pkg.digest and copy is None:
         diagnostics.add(
             "S003_SIDECAR_STALE",
             f"sidecar was built for {target_ref.get('digest')}; the package is {pkg.digest}",
@@ -93,6 +101,9 @@ def bind_sidecar(target: Any, pkg: PackageResult, strict: bool = False) -> Sidec
     for node in pkg.nodes:
         for rep in node.representations:
             reps[f"{node.path}\0{rep.locale or ''}"] = rep
+    # Sidecar spec §5: on an issued copy, the items of changed node files are replaced before they are checked.
+    changed = set(copy.get("changedFiles", [])) if copy is not None else set()
+    replaced: set[int] = set()
     lines = [
         line for line in source.read(payload_path).decode("utf-8", errors="replace").split("\n") if js_trim(line) != ""
     ]
@@ -105,6 +116,15 @@ def bind_sidecar(target: Any, pkg: PackageResult, strict: bool = False) -> Sidec
             diagnostics.add("S004_SIDECAR_ITEM_INVALID", "payload line is not JSON", payload_path, i + 1)
             bad += 1
             continue
+        if changed and isinstance(item, dict) and isinstance(item.get("path"), str):
+            locale = item.get("locale")
+            target = reps.get(f"{item['path']}\0{'' if locale is None else js_string(locale)}")
+            if target is not None and target.file in changed:
+                # A placeholder keeps the vector rows in step with the items.
+                placeholder: dict[str, Any] = {}
+                replaced.add(id(placeholder))
+                out.chunks.append(placeholder)
+                continue
         problem = _check_item(item, reps, index)
         if problem:
             diagnostics.add("S004_SIDECAR_ITEM_INVALID", problem, payload_path, i + 1)
@@ -113,6 +133,8 @@ def bind_sidecar(target: Any, pkg: PackageResult, strict: bool = False) -> Sidec
         counts.setdefault(_key(item), set()).add(item["chunkIndex"])
         out.chunks.append(item)
     for item in out.chunks:
+        if id(item) in replaced:
+            continue
         if len(counts[_key(item)]) != item["chunkCount"]:
             diagnostics.add(
                 "S004_SIDECAR_ITEM_INVALID",
@@ -123,6 +145,33 @@ def bind_sidecar(target: Any, pkg: PackageResult, strict: bool = False) -> Sidec
             break
     if bad == 0 and truthy(storage.get("vectors")):
         bad += _attach_vectors(source, listed, index, out.chunks, len(lines), diagnostics)
+    out.chunks = [c for c in out.chunks if id(c) not in replaced]
+    if copy is not None and bad == 0:
+        files = 0
+        for node in pkg.nodes:
+            for rep in node.representations:
+                if rep.file not in changed:
+                    continue
+                files += 1
+                chunk: dict[str, Any] = {"path": node.path}
+                if rep.locale:
+                    chunk["locale"] = rep.locale
+                chunk.update(
+                    {
+                        "chunkIndex": 0,
+                        "chunkCount": 1,
+                        "start": rep.body_offset,
+                        "end": rep.body_offset + len(utf8(rep.body)),
+                    }
+                )
+                out.chunks.append(chunk)
+        if files > 0:
+            diagnostics.add(
+                "S009_SIDECAR_ITEMS_REPLACED",
+                f"bound to an issued copy of {copy['originalDigest']}; the items of {files} file(s) the issuer changed "
+                "were replaced by each file's whole body, without a vector",
+                SIDECAR_MANIFEST,
+            )
     out.usable = bad == 0
     if not out.usable:
         out.chunks = []

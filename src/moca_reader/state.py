@@ -9,6 +9,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from ._js import timestamp
+from .composition import composition_of
 from .relations import relation_index_of
 from .reviews import review_status_of
 
@@ -66,6 +67,10 @@ def package_state(result: PackageResult) -> dict[str, Any]:
         }
     if result._reading_order is not None:
         state["readingOrder"] = result._reading_order.to_state()
+    # Contract §9.4: the bindings by composition, so a store search filters and limits members as a library does.
+    composition = composition_of(result)
+    if composition:
+        state["composition"] = composition
     return state
 
 

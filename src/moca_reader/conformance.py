@@ -291,6 +291,7 @@ def actual_for(root: str, c: dict[str, Any]) -> dict[str, Any]:
         "tags": result.tags,
         "apps": result.apps,
         "readingOrder": result.reading_order,
+        "datePublished": result.date_published,
         "issuedCopy": result.issued_copy,
         "evidenceMatched": evidence_matched,
         "envelope": result.envelope,

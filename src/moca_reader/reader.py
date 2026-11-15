@@ -101,6 +101,8 @@ class PackageResult:
     apps: list[str] | None = None
     # Package spec §4.10: the ordered collection the package is read in, when it resolves.
     reading_order: str | None = None
+    # Package spec §4.12: informative, as written, when the manifest passes its schema.
+    date_published: str | None = None
     # Attestations §7.1: {"originalDigest", "issuers", "changedFiles"} for an issued copy that passed verification.
     issued_copy: dict[str, Any] | None = None
     _reading_order: ReadingOrder | None = field(default=None, repr=False)
@@ -254,6 +256,8 @@ def _read(
         result.distribution = get(manifest, "distribution") or "open"
         if isinstance(manifest.get("apps"), list):
             result.apps = list(manifest["apps"])
+        if isinstance(manifest.get("datePublished"), str):
+            result.date_published = manifest["datePublished"]
         # Package spec §4.6-4.8: held aside, and exposed by _finish only when the package is valid.
         result._catalogue = check_catalogue(manifest, data, diagnostics, options.limits["maxImageBytes"])
     profiles = get(manifest, "profiles")
@@ -572,10 +576,13 @@ def _resolve_members(
                 MANIFEST,
             )
             entry.status = "mismatch"
-        elif child.digest != entry.digest:
+        elif child.digest != entry.digest and (child.issued_copy or {}).get("originalDigest") != entry.digest:
+            # Package spec §7.1: an issued copy matches through the original digest it verified with, and only then.
+            copy = f" (an issued copy of {child.issued_copy['originalDigest']})" if child.issued_copy else ""
             diagnostics.add(
                 "R002_MEMBER_DIGEST_MISMATCH",
-                f"member {entry.id}@{entry.version} has digest {child.digest or '(none)'}, but {entry.digest} is pinned",
+                f"member {entry.id}@{entry.version} has digest {child.digest or '(none)'}{copy}, "
+                f"but {entry.digest} is pinned",
                 MANIFEST,
             )
             entry.status = "mismatch"

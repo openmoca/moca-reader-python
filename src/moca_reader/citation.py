@@ -117,6 +117,9 @@ def citation_for(
             "originalDigest": result.issued_copy["originalDigest"],
             "issuers": list(result.issued_copy["issuers"]),
         }
+    # Package spec §4.12: informative, as written.
+    if result.date_published is not None:
+        package["datePublished"] = result.date_published
 
     node_part: dict[str, Any] = {
         "id": f"{js_string(manifest.get('id'))}#{node.path}",
@@ -138,6 +141,13 @@ def citation_for(
         node_part["digest"] = f"sha256:{rep.sha256}"
     if result.issued_copy is not None and rep.file in result.issued_copy["changedFiles"]:
         node_part["issuedChange"] = True
+    # Package spec §4.12: the node's own date, never the package's; absent when it does not parse.
+    date_published = moca.get("date_published")
+    if isinstance(date_published, str) and _date_or_none(date_published) is not None:
+        node_part["datePublished"] = date_published
+    # Package spec §5.7: the valid media descriptions, in order.
+    if rep.media:
+        node_part["media"] = [d.to_json() for d in rep.media]
 
     verified = fm.get("verified")
     verified_list = verified if isinstance(verified, list) else [verified] if truthy(verified) else []

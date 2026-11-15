@@ -22,6 +22,7 @@ MANIFEST_KEYS = {
     "locales",
     "license",
     "publisher",
+    "datePublished",
     "distribution",
     "images",
     "translations",
@@ -185,13 +186,38 @@ def check_manifest(manifest: Any, diagnostics: Diagnostics, known_profiles: Iter
 
     known = set(known_profiles)
     profiles = manifest.get("profiles")
+    unrecognised = False
     for uri in profiles if isinstance(profiles, dict) else []:
         if uri not in known:
+            unrecognised = True
             diagnostics.add(
                 "F001_PROFILE_UNRECOGNISED",
                 f"profile {uri} is not recognised; its data is preserved but not interpreted",
                 file,
             )
+    # Package spec §7.2: a type that is neither core nor defined by a declared profile is reported, unless the
+    # package declares a profile this Reader does not recognise, which might define it.
+    relations = manifest.get("relations")
+    if not unrecognised and isinstance(relations, list):
+        defined = {
+            t for uri in (profiles if isinstance(profiles, dict) else []) for t in PROFILE_RELATION_TYPES.get(uri, ())
+        }
+        for r in relations:
+            kind = r.get("type") if isinstance(r, dict) else None
+            if isinstance(kind, str) and kind not in CORE_RELATION_TYPES and kind not in defined:
+                diagnostics.add(
+                    "R005_RELATION_TYPE_UNKNOWN",
+                    f'relation type "{kind}" is not a core type and no declared profile defines it; '
+                    "it is preserved and has no effect",
+                    file,
+                )
+
+
+# Package spec §7.2: the core relation types.
+CORE_RELATION_TYPES = frozenset({"supersedes", "amends", "conflictsWith", "crossReferences", "isPartOf"})
+
+# Relation types each recognised profile defines. None does yet.
+PROFILE_RELATION_TYPES: dict[str, tuple[str, ...]] = {}
 
 
 # Package spec §4.6: the first bytes of each image type.

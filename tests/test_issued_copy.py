@@ -58,3 +58,41 @@ def test_a_malformed_statement_is_an_error_never_an_exception() -> None:
     }
     check = check_issued_copy(statement, SignatureResult("valid"), r.manifest, r.digest or "", r.file_digests, True)
     assert check.error
+
+
+def test_a_dense_sidecar_bound_to_an_issued_copy_keeps_each_vector_with_its_item(tmp_path: object) -> None:
+    """Sidecar spec §5: the changed file's items are replaced, and later vector rows stay with their own items."""
+    import shutil
+    import struct
+    from pathlib import Path
+
+    from moca_reader import bind_sidecar
+
+    sidecar = Path(str(tmp_path)) / "sidecar"
+    shutil.copytree(FIX / "sidecars" / "issued-original", sidecar)
+    index = json.loads((sidecar / "index.json").read_text())
+    index["indexType"] = "dense"
+    index["model"] = {"name": "test-model", "dimensions": 2}
+    index["storage"]["vectors"] = {"file": "payload/vectors.f32", "dtype": "float32", "dimensions": 2}
+    (sidecar / "index.json").write_text(json.dumps(index))
+    # One row per item, in payload order: intro.md, lessons/one.md (changed in the copy), lessons/two.md.
+    (sidecar / "payload" / "vectors.f32").write_bytes(struct.pack("<6f", 1, 0, 0.5, 0.5, 0, 1))
+    copy_result = read_package(FIX / "issued" / "copy-valid", trust_root=TRUST, now=NOW)
+    bound = bind_sidecar(sidecar, copy_result)
+    assert bound.usable
+    assert [d.code for d in bound.diagnostics] == ["S009_SIDECAR_ITEMS_REPLACED"]
+    by_path = {c["path"]: c for c in bound.chunks}
+    assert list(by_path["intro.md"]["vector"]) == [1, 0]
+    assert list(by_path["lessons/two.md"]["vector"]) == [0, 1]
+    assert "vector" not in by_path["lessons/one.md"]
+    rep = next(n for n in copy_result.nodes if n.path == "lessons/one.md").representations[0]
+    assert by_path["lessons/one.md"]["start"] == rep.body_offset
+    assert by_path["lessons/one.md"]["end"] == rep.body_offset + len(rep.body.encode("utf-8"))
+
+
+def test_max_members_defaults_to_4096() -> None:
+    """Reader contract §3: the member limit counts every depth, so a long series needs room."""
+    from moca_reader.source import DEFAULT_LIMITS
+
+    assert DEFAULT_LIMITS["maxMembers"] == 4096
+    assert DEFAULT_LIMITS["maxMemberDepth"] == 8

@@ -109,6 +109,11 @@ CODES: dict[str, tuple[str, str]] = {
         INFO,
         "A supersedes or conflictsWith relation is not authorised by a signer of the package, so it has no effect.",
     ),
+    "R005_RELATION_TYPE_UNKNOWN": (
+        INFO,
+        "A relation type is not a core type, and no profile the package declares defines it. "
+        "It is preserved and has no effect.",
+    ),
     "F001_PROFILE_UNRECOGNISED": (INFO, "A declared profile is not recognised by this reader."),
     "O001_ONTOLOGY_UNPARSEABLE": (
         WARNING,
@@ -137,6 +142,11 @@ CODES: dict[str, tuple[str, str]] = {
         WARNING,
         "A search's upTo is on no loaded package's reading order, neither a member nor a descendant of one. "
         "It limits nothing.",
+    ),
+    "S009_SIDECAR_ITEMS_REPLACED": (
+        INFO,
+        "A sidecar built from the publisher's package is bound to an issued copy; the items of the files the issuer "
+        "changed were replaced by each file's whole body, without a vector.",
     ),
 }
 

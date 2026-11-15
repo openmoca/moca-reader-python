@@ -9,7 +9,7 @@ from typing import Any
 
 from ._js import decode_uri_component, get, js_sorted, js_trim, posix_dirname, posix_join, truthy, utf16_key
 from .diagnostics import Diagnostics
-from .evidence_text import check_selector, normalised_text, source_kind
+from .evidence_text import check_selector, is_media_time_range, normalised_text, source_kind
 from .frontmatter import split_frontmatter
 from .schemas import validate_against
 from .unicode import normalize
@@ -32,6 +32,29 @@ class EvidenceCheck:
 
 
 @dataclass
+class MediaDescription:
+    """Package spec §5.7: one valid media description, with its source's resource as written."""
+
+    source: str
+    resource: str
+    type: str
+    duration: float | None = None
+    digest: str | None = None
+    transcript: str | None = None
+    transcript_path: str | None = None  # the package path of the transcript; internal
+
+    def to_json(self) -> dict[str, Any]:
+        out: dict[str, Any] = {"source": self.source, "resource": self.resource, "type": self.type}
+        if self.duration is not None:
+            out["duration"] = self.duration
+        if self.digest is not None:
+            out["digest"] = self.digest
+        if self.transcript is not None:
+            out["transcript"] = self.transcript
+        return out
+
+
+@dataclass
 class Representation:
     locale: str | None  # None = the default language
     file: str  # package-relative path
@@ -41,6 +64,8 @@ class Representation:
     sha256: str | None
     evidence_checks: list[EvidenceCheck] = field(default_factory=list)
     concepts: list[str] | None = None
+    # Package spec §5.7: the valid media descriptions, in order.
+    media: list[MediaDescription] = field(default_factory=list)
 
 
 @dataclass
@@ -93,9 +118,12 @@ def read_content(
         _check_evidence(file, fm, diagnostics)
         _check_window(file, fm, diagnostics)
         _check_paths(file, fm, split.body, files, diagnostics)
-        checks = _verify_evidence(file, fm, files, data, diagnostics, limits, source_text, budget)
+        media = _media_descriptions(file, fm, files, diagnostics)
+        checks = _verify_evidence(file, fm, files, data, diagnostics, limits, source_text, budget, media)
 
-        rep = Representation(locale, file, fm, split.body, split.body_offset, file_digests.get(file), checks)
+        rep = Representation(
+            locale, file, fm, split.body, split.body_offset, file_digests.get(file), checks, media=media
+        )
         by_key.setdefault(key, ContentNode(key, [])).representations.append(rep)
 
     nodes: list[ContentNode] = []
@@ -176,6 +204,104 @@ def _check_evidence(file: str, fm: dict[str, Any], diagnostics: Diagnostics) -> 
             )
 
 
+# Package spec §5.7: the keys of a media description and the form of each.
+_MEDIA_KEYS = {"source", "type", "duration", "digest", "transcript"}
+_MEDIA_TYPE = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,126}/[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,126}(?:[ \t]*;[^\n\r]*)?\Z"
+)
+_SHA256 = re.compile(r"^sha256:[a-f0-9]{64}\Z")
+
+
+def _number(value: Any) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and value == value
+        and abs(value) != float("inf")
+    )
+
+
+def _well_formed_media(m: Any) -> bool:
+    if not isinstance(m, dict) or any(k not in _MEDIA_KEYS for k in m):
+        return False
+    if not isinstance(m.get("source"), str) or m["source"] == "":
+        return False
+    if not isinstance(m.get("type"), str) or not _MEDIA_TYPE.match(m["type"]):
+        return False
+    if "duration" in m and not (_number(m["duration"]) and m["duration"] >= 0):
+        return False
+    if "digest" in m and not (isinstance(m["digest"], str) and _SHA256.match(m["digest"])):
+        return False
+    return "transcript" not in m or (isinstance(m["transcript"], str) and m["transcript"] != "")
+
+
+def _local_evidence_path(file: str, resource: Any, files: dict[str, str]) -> str | None:
+    """The package path of a source's resource when it is a file under sources/ or media/, or None."""
+    if not isinstance(resource, str) or not _PATH_REF.match(resource):
+        return None
+    path, escapes = resolve_reference(file, resource)
+    if escapes or not path or path not in files or not path.startswith(_EVIDENCE_DIRS):
+        return None
+    return path
+
+
+def _media_descriptions(
+    file: str, fm: dict[str, Any], files: dict[str, str], diagnostics: Diagnostics
+) -> list[MediaDescription]:
+    """Package spec §5.7: the node's valid media descriptions; the invalid ones are reported and ignored."""
+    listed = get(fm.get("moca"), "media")
+    if not isinstance(listed, list):
+        return []
+    declared = fm.get("sources")
+    sources: dict[str, Any] = {}
+    for s in declared if isinstance(declared, list) else []:
+        sid = get(s, "id")
+        if isinstance(sid, str):
+            sources[sid] = s
+    described: set[str] = set()
+    out: list[MediaDescription] = []
+    for m in listed:
+        if not _well_formed_media(m):
+            continue  # the node schema reports it (C005)
+        source = sources.get(m["source"])
+        if source is None:
+            diagnostics.add(
+                "C006_EVIDENCE_SOURCE_UNKNOWN",
+                f'media names source "{m["source"]}", which sources[] does not declare with that id',
+                file,
+            )
+            continue
+        resource = get(source, "resource")
+        if not isinstance(resource, str):
+            diagnostics.add(
+                "C005_FIELD_INVALID", f'media describes source "{m["source"]}", which has no resource', file
+            )
+            continue
+        if m["source"] in described:
+            diagnostics.add(
+                "C005_FIELD_INVALID",
+                f'media describes source "{m["source"]}" twice; the later description is ignored',
+                file,
+            )
+            continue
+        described.add(m["source"])
+        d = MediaDescription(m["source"], resource, m["type"], m.get("duration"), m.get("digest"))
+        if "transcript" in m:
+            path = _local_evidence_path(file, get(sources.get(m["transcript"]), "resource"), files)
+            if path and source_kind(path) == "webvtt":
+                d.transcript = m["transcript"]
+                d.transcript_path = path
+            else:
+                diagnostics.add(
+                    "C005_FIELD_INVALID",
+                    f'media transcript "{m["transcript"]}" is not a source with a WebVTT file under sources/ or media/; '
+                    "it is dropped",
+                    file,
+                )
+        out.append(d)
+    return out
+
+
 def _verify_evidence(
     file: str,
     fm: dict[str, Any],
@@ -185,6 +311,7 @@ def _verify_evidence(
     limits: dict[str, int],
     source_text: dict[str, str],
     budget: dict[str, Any],
+    media: list[MediaDescription] | None = None,
 ) -> list[EvidenceCheck]:
     """Checks each moca.evidence selector against the cited file, when it is inside the package and checkable."""
     evidence = get(fm.get("moca"), "evidence")
@@ -196,19 +323,27 @@ def _verify_evidence(
         sid = get(s, "id")
         if truthy(sid) and isinstance(sid, (str, int, float, bool)):
             sources[sid] = s
+    descriptions = {d.source: d for d in media or []}
     checks: list[EvidenceCheck] = []
     for i, e in enumerate(evidence):
         key = get(e, "source")
         resource = get(sources.get(key), "resource") if isinstance(key, (str, int, float, bool)) else None
-        if not isinstance(resource, str) or not _PATH_REF.match(resource):
-            checks.append(EvidenceCheck(False))
-            continue
-        path, escapes = resolve_reference(file, resource)
-        if escapes or not path or path not in files or not path.startswith(_EVIDENCE_DIRS):
+        path = _local_evidence_path(file, resource, files)
+        selector = get(e, "selector")
+        # Contract §7: a time range is checked against the cited WebVTT file, or the transcript of the cited media,
+        # and bounded by the media's duration. A time range checked this way is evidence checkable in the package.
+        duration: float | None = None
+        if is_media_time_range(selector) and (not path or source_kind(path) != "webvtt"):
+            d = descriptions.get(key) if isinstance(key, str) else None
+            if d is not None and d.transcript_path:
+                path = d.transcript_path
+                duration = d.duration
+        elif path and source_kind(path) == "webvtt":
+            duration = next((d.duration for d in media or [] if d.transcript == key), None)
+        if not path:
             checks.append(EvidenceCheck(False))
             continue
         kind = source_kind(path)
-        selector = get(e, "selector")
         if not kind or not isinstance(selector, dict):
             checks.append(EvidenceCheck(True))
             continue
@@ -232,7 +367,7 @@ def _verify_evidence(
             if key not in budget["prepared"]:
                 budget["prepared"][key] = normalised_text(source_text[path], kind)
             prepared = budget["prepared"][key]
-        matched = check_selector(selector, source_text[path], kind, prepared)
+        matched = check_selector(selector, source_text[path], kind, prepared, duration)
         if matched is False:
             diagnostics.add(
                 "C011_EVIDENCE_SELECTOR_UNMATCHED",
