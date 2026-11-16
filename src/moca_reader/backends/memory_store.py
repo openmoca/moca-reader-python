@@ -91,32 +91,38 @@ class MemoryStoreBackend:
         return self
 
     def search(self, query: str, limit: int, filters: dict[str, Any]) -> list[dict[str, Any]]:
+        # Contract §9.2: score over the loaded packages, then filter, so a pushed-down filter never changes a score.
+        pushdown = "filterPushdown" in self.features
         candidates = self.records
-        if "filterPushdown" in self.features:
-            digests = set(filters.get("digests") or [])
-            excluded = {f"{x['digest']} {x['node']}" for x in filters.get("exclude") or []}
-            audiences, concepts = filters.get("audiences"), filters.get("concepts")
-            candidates = [
-                r
-                for r in candidates
-                if r["hit"]["digest"] in digests
-                and f"{r['hit']['digest']} {r['hit']['node']}" not in excluded
+        digests = set(filters.get("digests") or [])
+        excluded = {f"{x['digest']} {x['node']}" for x in filters.get("exclude") or []}
+        audiences, concepts = filters.get("audiences"), filters.get("concepts")
+        if pushdown:
+            candidates = [r for r in candidates if r["hit"]["digest"] in digests]
+
+        def passes(r: dict[str, Any]) -> bool:
+            return not pushdown or (
+                f"{r['hit']['digest']} {r['hit']['node']}" not in excluded
                 and record_allowed(r, audiences, filters.get("allowUnlabelled") is True)
                 and (not concepts or any(c in concepts for c in r["concepts"]))
-            ]
+            )
+
         if self.embedder is None:
             docs = [
                 {
-                    "item": r["hit"],
+                    "item": r,
                     "text": r["text"],
                     "key": f"{r['hit']['node']}\0{r['hit'].get('locale') or ''}\0{js_string((r['hit'].get('span') or {}).get('start', 0))}",
                 }
                 for r in candidates
             ]
-            return [{**h["item"], "score": h["score"]} for h in bm25(docs, query)[:limit]]
+            ranked = [h for h in bm25(docs, query) if passes(h["item"])]
+            return [{**h["item"]["hit"], "score": h["score"]} for h in ranked[:limit]]
         q = self.embedder.embed([query], "query")[0]
         scored = [
-            {**r["hit"], "score": round_scaled(similarity(self.distance, q, r.get("vector")), 1e4)} for r in candidates
+            {**r["hit"], "score": round_scaled(similarity(self.distance, q, r.get("vector")), 1e4)}
+            for r in candidates
+            if passes(r)
         ]
         scored.sort(key=lambda h: -h["score"])
         return scored[:limit]

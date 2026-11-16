@@ -151,6 +151,11 @@ CODES: dict[str, tuple[str, str]] = {
         "A sidecar built from the publisher's package is bound to an issued copy; the items of the files the issuer "
         "changed were replaced by each file's whole body, without a vector.",
     ),
+    "S010_SEARCH_TRUNCATED": (
+        WARNING,
+        "A search stopped at a bound the host set before limit records passed the gate; better-matching records that "
+        "pass may exist.",
+    ),
 }
 
 # Codes that are no longer emitted. Codes are never reused.

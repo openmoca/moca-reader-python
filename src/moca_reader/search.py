@@ -28,7 +28,6 @@ if TYPE_CHECKING:
     from .reader import PackageResult
     from .structure_ops import StructureIndex
 
-MAX_FETCH = 200
 SearchHit = dict[str, Any]  # search-hit.schema.json, plus "record" for store backends
 
 
@@ -106,6 +105,7 @@ class _Context:
     hook_context: HookContext
     # Package spec §5.6: what each loaded composing package binds its members to.
     composition: CompositionIndex
+    findings: Diagnostics
 
 
 class Search:
@@ -119,11 +119,16 @@ class Search:
         overfetch: int = 3,
         hooks: SearchHooks | None = None,
         allow_unlabelled: bool = False,
+        max_candidates: int | None = None,
     ) -> None:
         from .library import Library
 
         if backend is None or not callable(getattr(backend, "search", None)):
             raise TypeError("Search needs a backend")
+        if max_candidates is not None and (
+            isinstance(max_candidates, bool) or not isinstance(max_candidates, int) or max_candidates < 1
+        ):
+            raise ValueError("max_candidates must be an integer of at least 1")
         self.library: Library | None = source if isinstance(source, Library) else None
         self.states: dict[str, dict[str, Any]] | None = (
             None if isinstance(source, Library) else {s["digest"]: s for s in source.packages}
@@ -144,6 +149,8 @@ class Search:
         # Contract §8 (moca-spec ADR-0016): unlabelled content is outside an audience set unless the host allows it.
         self.allow_unlabelled = allow_unlabelled is True
         self.overfetch = overfetch
+        # Contract §9.2: the host's bound on the candidates one search call examines; None for no bound.
+        self.max_candidates = max_candidates
         self.hooks = hooks or SearchHooks()
         # The findings of the latest search() call, such as S008 (Reader interface §5.1).
         self.diagnostics: list[Diagnostic] = []
@@ -162,15 +169,29 @@ class Search:
         ctx = self._context(limit, include_all, locale, concepts, scope, up_to)
         if self.hooks.ingress is not None:
             _apply_ingress(ctx, self.hooks.ingress(query, ctx.hook_context))
-        limit_, filters = self._plan(ctx)
+        size, filters = self._plan(ctx)
         effective = ctx.request.get("query")
-        hits = self.backend.search(effective if effective is not None else query, limit_, filters)
-        candidates = self._resolve(hits, ctx)
-        if self.hooks.egress is not None:
-            candidates = self.hooks.egress(
-                [{**r, "retrieval": {"via": "search"}} for r in candidates], ctx.hook_context
-            )
-        return self._gate(candidates, ctx)
+        # Contract §9.2, "Filters come before the limit": ask again, for more each time, until limit records pass
+        # the gate or the backend has no more.
+        while True:
+            hits = self.backend.search(effective if effective is not None else query, size, filters)
+            candidates = self._resolve(hits, ctx)
+            if self.hooks.egress is not None:
+                candidates = self.hooks.egress(
+                    [{**r, "retrieval": {"via": "search"}} for r in candidates], ctx.hook_context
+                )
+            passed = self._gate(candidates, ctx)
+            want = ctx.caller["limit"]
+            if len(passed) >= want or not isinstance(hits, list) or len(hits) < size:
+                return passed[:want]
+            if self.max_candidates is not None and size >= self.max_candidates:
+                ctx.findings.add(
+                    "S010_SEARCH_TRUNCATED",
+                    f"stopped at maxCandidates {self.max_candidates} with {len(passed)} of {want} records",
+                )
+                self.diagnostics = ctx.findings.items
+                return passed
+            size = size * 2 if self.max_candidates is None else min(size * 2, self.max_candidates)
 
     def _context(
         self,
@@ -220,7 +241,7 @@ class Search:
             if self.library
             else [(s.get("digest"), s.get("composition")) for s in (self.states or {}).values() if isinstance(s, dict)]
         )
-        return _Context(now, index, request, caller, loaded, hook_context, composition)  # type: ignore[arg-type]
+        return _Context(now, index, request, caller, loaded, hook_context, composition, findings)  # type: ignore[arg-type]
 
     def _plan(self, ctx: _Context) -> tuple[int, dict[str, Any]]:
         request = ctx.request
@@ -252,18 +273,65 @@ class Search:
         # to the gate when any loaded package binds members.
         if concepts and not ctx.composition.has_bindings:
             filters["concepts"] = concepts
-        # Fetch more than the limit when the gate may drop hits (no pushdown, or upTo, which has no pushdown
-        # filter), or when an egress hook reorders them and needs candidates to choose from.
+        # The search's own candidate check for what has no pushdown filter: upTo, and concepts bound by composition.
+        # Backends that know it (the Reader's own) apply it after scoring; the gate still checks every candidate.
+        accept = self._accept(ctx, concepts)
+        if accept is not None:
+            filters["accept"] = accept
+        # Ask for more than the limit when the gate may drop hits (no pushdown, or a filter with no pushdown), or
+        # when an egress hook reorders them and needs candidates to choose from. Either way the search asks again
+        # while too few pass (contract §9.2).
         pushdown = "filterPushdown" in (getattr(self.backend, "features", None) or [])
-        fetch = (
+        first = (
             request["limit"]
             if pushdown
             and self.hooks.egress is None
             and not isinstance(request.get("upTo"), str)
             and not (concepts and ctx.composition.has_bindings)
-            else min(request["limit"] * self.overfetch, MAX_FETCH)
+            else request["limit"] * self.overfetch
         )
-        return fetch, filters
+        if self.max_candidates is not None:
+            first = min(first, self.max_candidates)
+        return max(1, first), filters
+
+    def _accept(self, ctx: _Context, concepts: list[str] | None) -> Callable[[dict[str, Any]], bool] | None:
+        """The candidate check for upTo and for concepts bound by composition, on a hit before it is resolved: the
+        gate's own tests (steps 5.5 and 5.6) on the node's package, path and concepts. Library searches only."""
+        if not self.library:
+            return None
+        up_to = ctx.caller.get("upTo")
+        up_to = up_to if isinstance(up_to, str) else None
+        composed = frozenset(concepts) if concepts and ctx.composition.has_bindings else None
+        if up_to is None and composed is None:
+            return None
+        late: dict[str, tuple[ReadingOrder, frozenset[str]] | None] = {}
+        paths: dict[str, dict[str, Any]] = {}
+
+        def accept(hit: dict[str, Any]) -> bool:
+            result = ctx.loaded.get(str(hit.get("digest")))
+            if result is None:
+                return True
+            by_path = paths.get(result.digest or "")
+            if by_path is None:
+                by_path = paths[result.digest or ""] = {n.path: n for n in result.nodes}
+            node = by_path.get(str(hit.get("path")))
+            rep = (
+                next((r for r in node.representations if (r.locale or None) == (hit.get("locale") or None)), None)
+                if node is not None
+                else None
+            )
+            if rep is None:
+                return True
+            record: dict[str, Any] = {
+                "package": {"digest": result.digest, "id": js_string(result.manifest.get("id"))},
+                "node": {"path": hit.get("path")},
+                "concepts": list(rep.concepts or []),
+            }
+            if composed is not None and not ctx.composition.bound_to(record, composed):
+                return False
+            return up_to is None or self._passes_up_to(record, up_to, ctx, late)
+
+        return accept
 
     def _concepts(self, request: Any) -> list[str] | None:
         """The concepts a record must be bound to: the caller's, plus a scope and its descendants."""
@@ -309,7 +377,8 @@ class Search:
         return out
 
     def _gate(self, candidates: Any, ctx: _Context) -> list[CitationRecord]:
-        """The gate: always last, whatever the backend and the hooks did."""
+        """The gate: always last, whatever the backend and the hooks did. Every record that passes, best first; the
+        caller keeps the limit."""
         request = ctx.caller
         concepts = self._concepts(request)
         wanted = frozenset(concepts) if concepts else None
@@ -344,7 +413,7 @@ class Search:
             out.append(record)
         if self.hooks.egress is None:
             out.sort(key=lambda r: -(r.get("score") or 0))
-        return out[: request["limit"]]
+        return out
 
     def _passes_up_to(
         self,
