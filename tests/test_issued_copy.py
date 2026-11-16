@@ -91,7 +91,7 @@ def test_a_dense_sidecar_bound_to_an_issued_copy_keeps_each_vector_with_its_item
 
 
 def test_max_members_defaults_to_4096() -> None:
-    """Reader contract §3: the member limit counts every depth, so a long series needs room."""
+    """Reader contract §3: the member limit counts every depth, so a large composite package needs room."""
     from moca_reader.source import DEFAULT_LIMITS
 
     assert DEFAULT_LIMITS["maxMembers"] == 4096
