@@ -238,11 +238,20 @@ def actual_for(root: str, c: dict[str, Any]) -> dict[str, Any]:
                 and p.result.source.location
                 and os.path.normcase(os.path.normpath(p.result.source.location)) in allow
             ]
+            # Contract §9.4: the structure source, packages read into a small library whose structure the hooks see.
+            structure = None
+            if o.get("structure"):
+                structure = Library(clock=lambda: now, overlays=overlays)
+                for t in o["structure"]:
+                    source_result = read_package(os.path.join(root, t), **read_options)
+                    if source_result.valid:
+                        structure.add(source_result)
             store_search = Search(
-                StoreScope(allowed, lambda: now, o.get("allowUnsignedRelations") is True),
+                StoreScope(allowed, lambda: now, o.get("allowUnsignedRelations") is True, structure),
                 store,
                 audiences=o.get("audiences"),
                 allow_unlabelled=o.get("allowUnlabelled") is True,
+                hooks=hooks,
             )
             records = store_search.search(s["query"], **options)
             codes.extend(d.code for d in store_search.diagnostics)

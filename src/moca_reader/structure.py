@@ -8,7 +8,7 @@ parses it (and overlays, ADR-0008) into facts, checks node bindings, and builds 
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import rdflib
@@ -38,6 +38,7 @@ _RELATIVE_HOST = "https://moca-relative.invalid/"
 
 PREDICATES: dict[str, tuple[str, bool]] = {
     f"{SKOS}prefLabel": ("label", False),
+    f"{SKOS}altLabel": ("altLabel", False),
     f"{SKOS}definition": ("definition", False),
     f"{SKOS}broader": ("broader", False),
     f"{SKOS}narrower": ("broader", True),
@@ -151,7 +152,7 @@ def parse_structure(
         if not known:
             continue
         kind, flip = known
-        if kind in ("label", "definition"):
+        if kind in ("label", "altLabel", "definition"):
             if isinstance(o, rdflib.Literal):
                 add({"s": subject, "kind": kind, "value": str(o), "lang": o.language or ""})
         elif kind == "deprecated":
@@ -170,6 +171,8 @@ class Concept:
     labels: dict[str, str]
     definitions: dict[str, str]
     deprecated: bool = False
+    # Package spec §5.6: alternative labels by language tag, in the order read, each once.
+    alt_labels: dict[str, list[str]] = field(default_factory=dict)
 
 
 class StructureGraph:
@@ -218,6 +221,10 @@ class StructureGraph:
             elif kind == "label":
                 c = concept(f["s"])
                 c.labels.setdefault(f["lang"], f["value"])
+            elif kind == "altLabel":
+                alts = concept(f["s"]).alt_labels.setdefault(f["lang"], [])
+                if f["value"] not in alts:
+                    alts.append(f["value"])
             elif kind == "definition":
                 c = concept(f["s"])
                 c.definitions.setdefault(f["lang"], f["value"])

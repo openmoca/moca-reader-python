@@ -93,6 +93,9 @@ class StoreScope:
     packages: Sequence[dict[str, Any]]
     clock: Callable[[], datetime] = field(default=lambda: datetime.now(UTC))
     allow_unsigned_relations: bool = False
+    # Contract §9.4: the structure source, a library of packages the host has read (a show and its seasons) whose
+    # structure the hooks see and scope follows. It adds no records.
+    structure: Library | None = None
 
 
 @dataclass
@@ -140,6 +143,12 @@ class Search:
             else state_index(self.states, source.allow_unsigned_relations)
         )
         self.clock: Callable[[], datetime] = source.clock
+        # Contract §9.4: the structure the hooks and scope see; a store search's comes from its structure source.
+        self.structure: StructureIndex | None = (
+            source.structure
+            if isinstance(source, Library)
+            else (source.structure.structure if source.structure else None)
+        )
         # Contract §9, Members: with the host's opt-in for its own packages, unsigned composers limit their members too.
         self.allow_unsigned = (
             source.allow_unsigned_relations is True if isinstance(source, (Library, StoreScope)) else False
@@ -175,7 +184,7 @@ class Search:
         # the gate or the backend has no more.
         while True:
             hits = self.backend.search(effective if effective is not None else query, size, filters)
-            candidates = self._resolve(hits, ctx)
+            candidates = self._narrow(self._resolve(hits, ctx), ctx)
             if self.hooks.egress is not None:
                 candidates = self.hooks.egress(
                     [{**r, "retrieval": {"via": "search"}} for r in candidates], ctx.hook_context
@@ -232,7 +241,7 @@ class Search:
         hook_context = HookContext(
             MappingProxyType(request),
             self.library,
-            self.library.structure if self.library else None,
+            self.structure,
             self.audiences,
             now,
         )
@@ -338,9 +347,22 @@ class Search:
         found = dict.fromkeys(request.get("concepts") or [])
         if request.get("scope"):
             found.setdefault(request["scope"])
-            for c in self.library.structure.descendants(request["scope"]) if self.library else []:
+            for c in self.structure.descendants(request["scope"]) if self.structure else []:
                 found.setdefault(c)
         return list(found) if found else None
+
+    def _narrow(self, candidates: list[CitationRecord], ctx: _Context) -> list[CitationRecord]:
+        """Contract §9.2, "Ingress narrowing": concepts or a scope an ingress hook set keep only records bound to them,
+        by their own concepts or by composition, after the backend and before the egress hook and the gate, on every
+        round."""
+        request, caller = ctx.request, ctx.caller
+        if request.get("concepts") == caller["concepts"] and request.get("scope") == caller["scope"]:
+            return candidates
+        concepts = self._concepts(request)
+        if not concepts:
+            return candidates
+        wanted = frozenset(concepts)
+        return [r for r in candidates if ctx.composition.bound_to(r, wanted)]
 
     def _resolve(self, hits: Any, ctx: _Context) -> list[CitationRecord]:
         """Backend hits as citation records; hits that do not resolve are dropped."""

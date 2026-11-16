@@ -41,6 +41,7 @@ class StructureIndex:
         if label is not None:
             out["label"] = label
         out["labels"] = dict(c.labels)
+        out["altLabels"] = {lang: list(values) for lang, values in c.alt_labels.items()}
         if definition is not None:
             out["definition"] = definition
         out.update(
