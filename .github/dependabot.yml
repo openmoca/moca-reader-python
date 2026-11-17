@@ -5,6 +5,14 @@ updates:
     directory: /
     schedule:
       interval: weekly
+  # The fuzzer (Atheris), kept apart from the Reader's own dependencies.
+  - package-ecosystem: pip
+    directory: /fuzz
+    schedule:
+      interval: weekly
+    # Wait a week after a release before proposing it, so a hijacked release is likely caught first.
+    cooldown:
+      default-days: 7
   - package-ecosystem: github-actions
     directory: /
     schedule:

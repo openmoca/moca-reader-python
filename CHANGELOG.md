@@ -2,6 +2,21 @@
 
 All notable changes to `moca-reader`. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Fixed (contract §3, found by fuzzing)
+
+- A damaged archive no longer raises from `read_package`. An entry whose local
+  header is not where the central directory says, or an encrypted entry, is
+  P002; an entry needing a newer zip version than Python reads rejects the
+  archive (T003).
+
+### Added
+
+- Coverage-guided fuzzing with Atheris (`fuzz/`): archive bytes, and one file of
+  a valid package replaced. 60 seconds per target on pull requests, 30 minutes
+  nightly.
+
 ## [0.6.0] - 2026-11-11
 
 ### Added (Sigstore, offline)

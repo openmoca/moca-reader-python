@@ -1,0 +1,90 @@
+name: Fuzz
+
+# Coverage-guided fuzzing of the open-and-search path with Atheris (fuzz/README.md). Short on pull requests; longer
+# nightly, with the corpus kept between nightly runs. A crash, timeout or out-of-memory fails the job and uploads the
+# input.
+on:
+  pull_request:
+    paths: ['src/**', 'fuzz/**', 'uv.lock', '.github/workflows/fuzz.yml']
+  schedule:
+    - cron: '45 2 * * *'
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: Seconds per target
+        default: '600'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # Seeds and the package-files base come from the conformance corpus at the ref test.yml uses; move both together.
+  MOCA_SPEC_REF: v0.6.0
+
+jobs:
+  fuzz:
+    name: Fuzz (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [open, files]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          path: moca-reader-python
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          repository: ${{ github.repository_owner }}/moca-spec
+          ref: ${{ env.MOCA_SPEC_REF }}
+          path: moca-spec
+      # Atheris ships wheels for CPython 3.12 to 3.14 on Linux x86_64.
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e  # v6.8.0
+        with:
+          python-version: '3.13'
+      - name: Install the Reader (locked) and Atheris (hash-checked)
+        working-directory: moca-reader-python
+        run: |
+          uv sync --locked --no-dev
+          uv pip install --require-hashes -r fuzz/requirements.txt
+      - run: uv run --no-sync python fuzz/seed.py ../moca-spec fuzz/corpus
+        working-directory: moca-reader-python
+      - name: Restore the nightly corpus
+        if: github.event_name != 'pull_request'
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
+        with:
+          path: moca-reader-python/fuzz/kept-${{ matrix.target }}
+          key: fuzz-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: fuzz-${{ matrix.target }}-
+      - name: Fuzz
+        working-directory: moca-reader-python/fuzz
+        env:
+          MOCA_SPEC_DIR: ${{ github.workspace }}/moca-spec
+          SECONDS_PER_TARGET: ${{ github.event_name == 'pull_request' && '60' || github.event_name == 'schedule' && '1800' || inputs.seconds }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          kept="kept-$TARGET"; mkdir -p "$kept"
+          if [ "$TARGET" = open ]; then seeds=corpus; script=open_search.py; len=1048576; else seeds=corpus-files; script=package_files.py; len=65536; fi
+          # New inputs go to the first corpus folder (kept), seeds are read from the second.
+          uv run --no-sync python "$script" "$kept" "$seeds" -rss_limit_mb=4096 -max_len=$len -max_total_time="$SECONDS_PER_TARGET"
+      - name: Save the nightly corpus
+        if: always() && github.event_name != 'pull_request'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
+        with:
+          path: moca-reader-python/fuzz/kept-${{ matrix.target }}
+          key: fuzz-${{ matrix.target }}-${{ github.run_id }}
+      - name: Upload failing inputs
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: fuzz-failures-${{ matrix.target }}
+          path: |
+            moca-reader-python/fuzz/crash-*
+            moca-reader-python/fuzz/timeout-*
+            moca-reader-python/fuzz/oom-*
+          if-no-files-found: ignore
