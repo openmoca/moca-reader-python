@@ -98,6 +98,10 @@ class PackageResult:
     images: list[dict[str, Any]] | None = None
     translations: dict[str, dict[str, Any]] | None = None
     tags: list[str] | None = None
+    # Package spec §4.13: credits as written, when the package is valid and the manifest has them. Labels, not proof.
+    publisher: dict[str, Any] | None = None
+    url: str | None = None
+    contributors: list[dict[str, Any]] | None = None
     # Package spec §4.9: as declared when the manifest passes its schema. Advice only; never fetched or opened.
     apps: list[str] | None = None
     # Package spec §4.10: the ordered collection the package is read in, when it resolves.
@@ -644,6 +648,9 @@ def _finish(result: PackageResult, diagnostics: Diagnostics) -> PackageResult:
     result.images = result._catalogue.get("images")
     result.translations = result._catalogue.get("translations")
     result.tags = result._catalogue.get("tags")
+    result.publisher = result._catalogue.get("publisher")
+    result.url = result._catalogue.get("url")
+    result.contributors = result._catalogue.get("contributors")
     caps = {"core"}
     all_local = True
     reviewed_files = 0

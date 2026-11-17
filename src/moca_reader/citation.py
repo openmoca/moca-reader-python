@@ -5,6 +5,7 @@ A citation record is a dict valid against citation-record.schema.json: the same 
 
 from __future__ import annotations
 
+import copy
 import math
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -140,6 +141,9 @@ def citation_for(
     date_published = moca.get("date_published")
     if isinstance(date_published, str) and _date_or_none(date_published) is not None:
         node_part["datePublished"] = date_published
+    # Package spec §4.13: the node's own credits, never the package's.
+    if rep.contributors is not None:
+        node_part["contributors"] = copy.deepcopy(rep.contributors)
     # Package spec §5.7: the valid media descriptions, in order.
     if rep.media:
         node_part["media"] = [d.to_json() for d in rep.media]
