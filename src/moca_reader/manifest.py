@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import re
 import unicodedata
 from collections.abc import Iterable, Mapping
@@ -22,6 +23,8 @@ MANIFEST_KEYS = {
     "locales",
     "license",
     "publisher",
+    "url",
+    "contributors",
     "datePublished",
     "distribution",
     "images",
@@ -247,6 +250,28 @@ def image_problem(src: str, image_type: str, data: Mapping[str, bytes], max_imag
     return None
 
 
+def checked_credit(
+    credit: dict[str, Any],
+    where: str,
+    data: Mapping[str, bytes],
+    max_image_bytes: int,
+    diagnostics: Diagnostics,
+    file: str,
+) -> dict[str, Any]:
+    """Package spec §4.13: a credit as written, less an image that fails the check of §4.6 (M010, against ``file``).
+
+    The rest of the credit stands.
+    """
+    out = copy.deepcopy(credit)
+    image = out.get("image")
+    if isinstance(image, dict):
+        problem = image_problem(image["src"], image["type"], data, max_image_bytes)
+        if problem:
+            diagnostics.add("M010_IMAGE_INVALID", f"{where}.image: {problem}; the image is left out", file)
+            del out["image"]
+    return out
+
+
 def _fold_ascii(s: str) -> str:
     """Package spec §2: case-insensitive means A-Z and a-z only."""
     return "".join(chr(ord(c) + 32) if "A" <= c <= "Z" else c for c in s)
@@ -271,9 +296,10 @@ def _dedupe_tags(tags: list[str], where: str, diagnostics: Diagnostics) -> list[
 def check_catalogue(
     manifest: dict[str, Any], data: Mapping[str, bytes], diagnostics: Diagnostics, max_image_bytes: int
 ) -> dict[str, Any]:
-    """Package spec §4.6-4.8: images, translations and tags, once the manifest passes its schema.
+    """Package spec §4.6-4.8, §4.13: images, translations, tags and credits, once the manifest passes its schema.
 
-    Returns what the result exposes: ``images``, ``translations`` and ``tags``, each only when declared.
+    Returns what the result exposes: ``images``, ``translations``, ``tags``, ``publisher``, ``url`` and
+    ``contributors``, each only when declared.
     """
     file = "moca.json"
     out: dict[str, Any] = {}
@@ -291,6 +317,16 @@ def check_catalogue(
             out["images"].append(dict(image))
     if "tags" in manifest:
         out["tags"] = _dedupe_tags(manifest["tags"], "tags", diagnostics)
+    # Package spec §4.13: credits, exposed as written; labels, not proof.
+    if "publisher" in manifest:
+        out["publisher"] = checked_credit(manifest["publisher"], "publisher", data, max_image_bytes, diagnostics, file)
+    if "url" in manifest:
+        out["url"] = manifest["url"]
+    if "contributors" in manifest:
+        out["contributors"] = [
+            checked_credit(c, f"contributors[{i}]", data, max_image_bytes, diagnostics, file)
+            for i, c in enumerate(manifest["contributors"])
+        ]
     if "translations" in manifest:
         locales = {_fold_ascii(t) for t in manifest.get("locales", [])}
         out["translations"] = {}

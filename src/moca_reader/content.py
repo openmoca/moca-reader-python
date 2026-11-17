@@ -12,6 +12,7 @@ from .alternates import default_sync, range_to_reference, sync_problem
 from .diagnostics import Diagnostics
 from .evidence_text import check_selector, is_media_time_range, normalised_text, source_kind, webvtt
 from .frontmatter import split_frontmatter
+from .manifest import checked_credit
 from .schemas import validate_against
 from .unicode import normalize
 
@@ -76,6 +77,8 @@ class Representation:
     concepts: list[str] | None = None
     # Package spec §5.7: the valid media descriptions, in order.
     media: list[MediaDescription] = field(default_factory=list)
+    # Package spec §4.13: the node's own credits, when they match the node schema.
+    contributors: list[dict[str, Any]] | None = None
 
 
 @dataclass
@@ -133,8 +136,21 @@ def read_content(
         if not isinstance(fm.get("type"), str) or js_trim(fm["type"]) == "":
             diagnostics.add("C003_TYPE_MISSING", 'frontmatter needs a non-empty "type"', file)
             continue
-        for err in validate_against("node", fm):
+        field_errors = validate_against("node", fm)
+        for err in field_errors:
             diagnostics.add("C005_FIELD_INVALID", err, file)
+        # Package spec §4.13: the node's own credits, when they match the node schema; images checked as in §4.6.
+        moca_part = fm.get("moca")
+        credits = moca_part.get("contributors") if isinstance(moca_part, dict) else None
+        contributors = (
+            [
+                checked_credit(c, f"moca.contributors[{i}]", data, limits["maxImageBytes"], diagnostics, file)
+                for i, c in enumerate(credits)
+            ]
+            if isinstance(credits, list)
+            and not any(e.startswith("/moca/contributors") or e.startswith("/moca ") for e in field_errors)
+            else None
+        )
         _check_evidence(file, fm, diagnostics)
         _check_window(file, fm, diagnostics)
         _check_paths(file, fm, split.body, files, diagnostics)
@@ -142,7 +158,15 @@ def read_content(
         checks = _verify_evidence(file, fm, files, data, diagnostics, limits, source_text, budget, media)
 
         rep = Representation(
-            locale, file, fm, split.body, split.body_offset, file_digests.get(file), checks, media=media
+            locale,
+            file,
+            fm,
+            split.body,
+            split.body_offset,
+            file_digests.get(file),
+            checks,
+            media=media,
+            contributors=contributors,
         )
         by_key.setdefault(key, ContentNode(key, [])).representations.append(rep)
 
