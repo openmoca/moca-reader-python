@@ -178,7 +178,8 @@ def archive_source(archive: str | os.PathLike[str] | bytes, limits: dict[str, in
 
         zf = zipfile.ZipFile(io.BytesIO(archive) if isinstance(archive, bytes) else os.fspath(archive))
         infos = zf.infolist()
-    except (zipfile.BadZipFile, OSError, ValueError) as err:
+    # NotImplementedError: a central directory entry that needs a newer zip version than zipfile reads.
+    except (zipfile.BadZipFile, OSError, ValueError, NotImplementedError) as err:
         raise TargetError("T003_ARCHIVE_REJECTED", f"archive could not be opened: {err}") from err
     if len(infos) > lim["maxEntries"]:
         raise TargetError(
@@ -215,10 +216,11 @@ def archive_source(archive: str | os.PathLike[str] | bytes, limits: dict[str, in
         # Contract §3: only stored and deflated entries are read; any other method is unreadable (P002).
         if info.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED):
             raise OSError(f"unsupported compression method {info.compress_type}")
-        # Contract §3: a bad CRC-32, or bytes that do not fit the declared size, make the entry unreadable (P002).
+        # Contract §3: a bad CRC-32, bytes that do not fit the declared size, a local header that is not where the
+        # central directory says, or an encrypted entry make the entry unreadable (P002). Never raise past the source.
         try:
             data = zf.read(info)
-        except (zipfile.BadZipFile, EOFError, zlib.error) as err:
+        except (zipfile.BadZipFile, EOFError, zlib.error, ValueError, RuntimeError, NotImplementedError) as err:
             raise OSError(f"entry cannot be read: {err}") from err
         if len(data) != info.file_size:
             raise OSError(f"entry is {len(data)} bytes, not the {info.file_size} its header declares")
