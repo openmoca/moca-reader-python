@@ -48,7 +48,12 @@ def parse_date(value: Any) -> datetime | None:
         parsed = datetime.fromisoformat(value.upper().replace("Z", "+00:00"))
     except ValueError:
         return None
-    return parsed.astimezone(UTC)
+    try:
+        return parsed.astimezone(UTC)
+    except OverflowError:
+        # Within a day of year 1 or year 9999, the offset moves the instant outside what datetime holds. It is
+        # still an instant, before or after every other: the nearest one datetime holds stands for it.
+        return datetime.min.replace(tzinfo=UTC) if parsed.year == 1 else datetime.max.replace(tzinfo=UTC)
 
 
 def effective_window(
@@ -128,10 +133,35 @@ def _no_constants(name: str) -> Any:
     raise ValueError(f"{name} is not valid JSON")
 
 
+MAX_NESTING = 128
+"""The deepest nesting of arrays and objects (JSON) or sequences and mappings (frontmatter) this Reader reads.
+Deeper input is malformed. Package content is untrusted: a fixed bound keeps every step that walks a value
+independent of the call stack (Reader contract §3)."""
+
+_JSON_TOKEN = re.compile(r'"(?:[^"\\]++|\\.)*+"|[\[\]{}]')
+
+
+def json_nesting_exceeds(text: str, limit: int = MAX_NESTING) -> bool:
+    """Whether the arrays and objects in a JSON text nest deeper than ``limit``, strings skipped. One pass."""
+    depth = 0
+    for m in _JSON_TOKEN.finditer(text):
+        token = m[0]
+        if token in "[{":
+            depth += 1
+            if depth > limit:
+                return True
+        elif token in "]}":
+            depth -= 1
+    return False
+
+
 def json_loads(text: str, unique_keys: bool = False) -> Any:
     """``JSON.parse``: NaN and Infinity are not JSON. With ``unique_keys``, a repeated member name raises ValueError
-    (I-JSON, RFC 7493)."""
+    (I-JSON, RFC 7493). Arrays and objects nested deeper than MAX_NESTING raise ValueError."""
     import json
+
+    if json_nesting_exceeds(text):
+        raise ValueError(f"arrays and objects are nested more than {MAX_NESTING} levels deep")
 
     def pairs(items: list[tuple[str, Any]]) -> dict[str, Any]:
         out: dict[str, Any] = {}

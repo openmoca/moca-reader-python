@@ -39,7 +39,12 @@ def _decode_entities(text: str) -> str:
     def entity(m: re.Match[str]) -> str:
         e = m[1]
         if e[0] == "#":
-            cp = int(e[2:], 16) if e[1] in "xX" else int(e[1:], 10)
+            # Leading zeros count for nothing; more digits than any code point has is not a code point.
+            hexadecimal = e[1] in "xX"
+            digits = (e[2:] if hexadecimal else e[1:]).lstrip("0") or "0"
+            if len(digits) > (6 if hexadecimal else 7):
+                return m[0]
+            cp = int(digits, 16 if hexadecimal else 10)
             return chr(cp) if cp <= 0x10FFFF else m[0]
         return _ENTITIES.get(e.lower(), m[0])
 

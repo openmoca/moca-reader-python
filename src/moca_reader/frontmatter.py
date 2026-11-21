@@ -14,7 +14,7 @@ from typing import Any
 
 import yaml
 
-from ._js import js_trim, number_to_string
+from ._js import MAX_NESTING, js_trim, number_to_string
 from .digest import utf8
 
 _OPEN = re.compile(r"^---[ \t]*\r?\n")
@@ -134,7 +134,9 @@ def load_core_schema(text: str) -> Any:
     """Loads one YAML document with the YAML 1.2 core schema; aliases and duplicate keys are errors."""
     events = iter(yaml.parse(text, Loader=yaml.SafeLoader))
 
-    def node(event: yaml.Event) -> Any:
+    def node(event: yaml.Event, depth: int = 0) -> Any:
+        if depth > MAX_NESTING:
+            raise _error(f"frontmatter is nested more than {MAX_NESTING} levels deep", event)
         if isinstance(event, yaml.AliasEvent):
             # Alias expansion is a denial-of-service vector (Reader contract §3, "YAML aliases in frontmatter: 0").
             raise _error("YAML aliases are not allowed in frontmatter", event)
@@ -145,7 +147,7 @@ def load_core_schema(text: str) -> Any:
             for e in events:
                 if isinstance(e, yaml.SequenceEndEvent):
                     return out
-                out.append(node(e))
+                out.append(node(e, depth + 1))
         if isinstance(event, yaml.MappingStartEvent):
             mapping: dict[str, Any] = {}
             for e in events:
@@ -156,7 +158,7 @@ def load_core_schema(text: str) -> Any:
                 key = _key_text(_resolve(e))
                 if key in mapping:
                     raise _error(f'duplicated mapping key "{key}"', e)
-                mapping[key] = node(next(events))
+                mapping[key] = node(next(events), depth + 1)
         raise _error(f"unexpected YAML event {type(event).__name__}", event)
 
     first = next(events)  # StreamStart
