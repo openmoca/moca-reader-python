@@ -12,7 +12,10 @@ from typing import TYPE_CHECKING, Any
 from .._js import js_string, round_scaled
 from ..audience import record_allowed
 from ..citation import citation_for
+from ..diagnostics import Diagnostic, Diagnostics
 from ..sidecar import chunk_text
+from ..terms import UNSET, gate_reasons
+from ..terms_gate import TermsCount, library_resolver
 from .bm25 import bm25
 from .dense import similarity
 
@@ -34,12 +37,36 @@ class MemoryStoreBackend:
             *(("filterPushdown",) if filter_pushdown else ()),
         )
         self.diagnostics: list[Any] = []
+        # The findings of the latest ingest: U004 when its terms request left units out (Reader contract §9.4).
+        self.ingest_diagnostics: list[Diagnostic] = []
         self.records: list[dict[str, Any]] = []
 
-    def ingest(self, library: Library) -> MemoryStoreBackend:
-        """Ingests every node representation (or sidecar chunk) of every package, through citation records."""
+    def ingest(
+        self, library: Library, terms: dict[str, Any] | None = None, terms_limits: dict[str, Any] | None = None
+    ) -> MemoryStoreBackend:
+        """Ingests every node representation (or sidecar chunk) of every package, through citation records.
+
+        With a terms request (Reader contract §9.4, moca-spec ADR-0041), ``{"destination", "conditions"}``, each
+        unit's resolved terms are checked for the embedder's destination with the use ``embed``: where the embedder
+        runs (``device``, ``host`` or ``provider``) and the conditions it meets. A unit the gate removes is never
+        embedded or stored, and the ingest reports U004 (``ingest_diagnostics``). ``terms_limits`` are the host's own
+        ``ai`` values, floors that only tighten. Without a request, every unit is ingested.
+        """
         index = library.relation_index()
         now = library.clock()
+        request: dict[str, Any] | None = None
+        if isinstance(terms, dict):
+            conditions = terms.get("conditions")
+            request = {
+                "ai": {
+                    "destination": terms.get("destination"),
+                    "conditions": list(conditions) if isinstance(conditions, list) else [],
+                    "use": "embed",
+                }
+            }
+        limits = terms_limits if isinstance(terms_limits, (dict, list)) else UNSET
+        resolver = library_resolver(library, limits, request) if request is not None else None
+        removed = TermsCount()
         pending: list[dict[str, Any]] = []
         for p in library.packages:
             result = p.result
@@ -58,6 +85,11 @@ class MemoryStoreBackend:
                 rep = next((r for r in node.representations if (r.locale or None) == locale), None) if node else None
                 if node is None or rep is None:
                     continue
+                if resolver is not None and request is not None:
+                    reasons = gate_reasons(request, resolver.node_terms(result.digest, node.path).ai, None)
+                    if reasons:
+                        removed.add(reasons, resolver.closure(result.digest)["hidden"])
+                        continue
                 text = chunk_text(chunk, rep) if chunk is not None else body or ""
                 record = citation_for(result, node, rep, now, index, text)
                 if span is not None:
@@ -83,6 +115,9 @@ class MemoryStoreBackend:
             for entry, vector in zip(pending, vectors, strict=True):
                 entry["vector"] = vector
         self.records.extend(pending)
+        findings = Diagnostics()
+        removed.report(findings, "units from the ingest")
+        self.ingest_diagnostics = findings.items
         return self
 
     def remove(self, digest: str) -> MemoryStoreBackend:
