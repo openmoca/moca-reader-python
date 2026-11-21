@@ -15,7 +15,7 @@ from moca_reader import Library, bind_sidecar, read_package
 from moca_reader._js import MAX_NESTING, json_loads, parse_date
 from moca_reader.evidence_text import html_text
 from moca_reader.frontmatter import split_frontmatter
-from moca_reader.source import directory_source
+from moca_reader.source import _read_checking_each_step, directory_source
 
 NODE = "---\ntype: Note\ntitle: A\n---\n\n# A\n\nText.\n"
 MANIFEST = {"id": "https://example.com/m", "version": "1.0.0", "title": "M"}
@@ -167,3 +167,15 @@ def test_frontmatter_reads_core_tags() -> None:
     split = split_frontmatter("---\na: !!str 5\nb: !!seq [1]\nc: !!map {d: 1}\ne: ! x\n---\n")
     assert split.error is None
     assert split.data == {"a": "5", "b": [1], "c": {"d": 1}, "e": "x"}
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink") or os.name == "nt", reason="needs POSIX symbolic links")
+def test_the_step_by_step_check_used_on_windows_refuses_links(tmp_path: Path) -> None:
+    root = Path(package(tmp_path / "p", {"content/a.md": NODE}))
+    elsewhere = Path(package(tmp_path / "elsewhere", {"a.md": "host file"}))
+    assert _read_checking_each_step(str(root), ["content", "a.md"], 1 << 20) == NODE.encode()
+    (root / "content" / "a.md").unlink()
+    (root / "content").rmdir()
+    (root / "content").symlink_to(elsewhere, target_is_directory=True)
+    with pytest.raises(OSError, match="symbolic link"):
+        _read_checking_each_step(str(root), ["content", "a.md"], 1 << 20)

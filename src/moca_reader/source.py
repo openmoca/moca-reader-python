@@ -11,6 +11,7 @@ from __future__ import annotations
 import io
 import os
 import stat
+import sys
 import zipfile
 import zlib
 from collections.abc import Callable, Iterable
@@ -123,7 +124,7 @@ def directory_source(root: str | os.PathLike[str], limits: dict[str, int] | None
                 except OSError:
                     out.append(SourceEntry(rel, "unreadable"))
                     continue
-                if stat.S_ISLNK(st.st_mode):
+                if _is_link(st):
                     out.append(SourceEntry(rel, "symlink"))
                 elif stat.S_ISDIR(st.st_mode):
                     visit(abs_path, rel)
@@ -154,23 +155,27 @@ def directory_source(root: str | os.PathLike[str], limits: dict[str, int] | None
     return PackageSource("directory", walk, read, root_dir)
 
 
-_NO_FOLLOW = os.open in os.supports_dir_fd and hasattr(os, "O_NOFOLLOW") and hasattr(os, "O_DIRECTORY")
+# Reparse points that make a path step lead somewhere else, on Windows: symbolic links and junctions.
+_WINDOWS_LINK_TAGS = frozenset(
+    {getattr(stat, "IO_REPARSE_TAG_SYMLINK", 0xA000000C), getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", 0xA0000003)}
+)
+
+
+def _is_link(st: os.stat_result) -> bool:
+    return stat.S_ISLNK(st.st_mode) or getattr(st, "st_reparse_tag", 0) in _WINDOWS_LINK_TAGS
 
 
 def _read_no_follow(root: str, parts: list[str], most: int) -> bytes:
-    """The bytes of a regular file under root, opening each directory and the file itself relative to the one
-    before, without following a symbolic link, and checking what was opened, not the path. ``root`` is the host's.
-    Where the platform cannot open relative to a directory, each step is checked with lstat before reading."""
-    if not _NO_FOLLOW:
-        here = root
-        for part in parts:
-            here = os.path.join(here, part)
-            if stat.S_ISLNK(os.lstat(here).st_mode):
-                raise OSError(f"{'/'.join(parts)} has a symbolic link in its path")
-        if not stat.S_ISREG(os.lstat(here).st_mode):
-            raise OSError(f"{'/'.join(parts)} is no longer a regular file")
-        with open(here, "rb") as f:
-            return _read_bounded(f, os.fstat(f.fileno()).st_size, most)
+    """The bytes of a regular file under ``root`` (the host's), never through a symbolic link at any step.
+
+    Where the platform has them (POSIX), each directory and the file are opened relative to the one before with
+    O_NOFOLLOW, and what was opened is checked, not the path. Elsewhere (Windows has neither O_NOFOLLOW nor
+    O_DIRECTORY), each step of the path is checked with lstat, links and junctions refused, before the file is read.
+    """
+    if sys.platform == "win32":
+        return _read_checking_each_step(root, parts, most)
+    if os.open not in os.supports_dir_fd:
+        return _read_checking_each_step(root, parts, most)
     directory = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
     try:
         for part in parts[:-1]:
@@ -178,10 +183,23 @@ def _read_no_follow(root: str, parts: list[str], most: int) -> bytes:
             os.close(directory)
             directory = inner
         # O_NONBLOCK: a pipe swapped in is refused below, not waited on.
-        fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0), dir_fd=directory)
+        fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
     finally:
         os.close(directory)
     with os.fdopen(fd, "rb") as f:
+        st = os.fstat(f.fileno())
+        if not stat.S_ISREG(st.st_mode):
+            raise OSError(f"{'/'.join(parts)} is no longer a regular file")
+        return _read_bounded(f, st.st_size, most)
+
+
+def _read_checking_each_step(root: str, parts: list[str], most: int) -> bytes:
+    here = root
+    for part in parts:
+        here = os.path.join(here, part)
+        if _is_link(os.lstat(here)):
+            raise OSError(f"{'/'.join(parts)} has a symbolic link or junction in its path")
+    with open(here, "rb") as f:
         st = os.fstat(f.fileno())
         if not stat.S_ISREG(st.st_mode):
             raise OSError(f"{'/'.join(parts)} is no longer a regular file")
