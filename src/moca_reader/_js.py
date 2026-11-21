@@ -138,21 +138,37 @@ MAX_NESTING = 64
 (sequence or mapping) as level 1. A text that opens a 65th is malformed. The limit is fixed, so every Reader agrees,
 and it is checked without parsing deeper, so the check never depends on the call stack."""
 
-_JSON_TOKEN = re.compile(r'"(?:[^"\\]++|\\.)*+"|[\[\]{}]')
-
 
 def json_nesting_exceeds(text: str, limit: int = MAX_NESTING) -> bool:
     """Whether a JSON text opens an array or object at a level past ``limit``, strings skipped. One pass."""
+    return json_nesting_scan(text, limit)[0]
+
+
+def json_nesting_scan(text: str, limit: int = MAX_NESTING) -> tuple[bool, int]:
+    """The nesting check, and the steps it took: one step per character looked at, so never more than the length
+    of the text. A string that never closes runs to the end of the text, and nothing after its quote counts."""
     depth = 0
-    for m in _JSON_TOKEN.finditer(text):
-        token = m[0]
-        if token in "[{":
+    in_string = False
+    escaped = False
+    steps = 0
+    for ch in text:
+        steps += 1
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+        elif ch == '"':
+            in_string = True
+        elif ch == "[" or ch == "{":
             depth += 1
             if depth > limit:
-                return True
-        elif token in "]}":
+                return True, steps
+        elif ch == "]" or ch == "}":
             depth -= 1
-    return False
+    return False, steps
 
 
 def json_loads(text: str, unique_keys: bool = False) -> Any:

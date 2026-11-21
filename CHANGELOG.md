@@ -68,6 +68,10 @@ For moca-spec 0.7.0 ([moca-spec#5](https://github.com/openmoca/moca-spec/issues/
   tags no longer take time growing with the square of a line's or a source's length.
 - Directory sources never follow a symbolic link at any step of a path, including one swapped in after listing.
 - Frontmatter tags outside the YAML 1.2 core schema are refused (`C002`).
+- Front matter: every parser error is a diagnostic. Any error from the YAML library is `C002`. As a backstop, an
+  error no check foresaw while reading a member leaves that member unresolved with one `R001`, and one while
+  reading the package ends the read with one `P002`; `read_package` returns a result in both cases.
+- JSON nesting check: one pass. The check before each JSON parse looks at each character once.
 
 ### Added (credits: package spec §4.13)
 
