@@ -145,3 +145,16 @@ def test_a_directory_source_never_follows_a_link_swapped_in_after_listing(tmp_pa
     (root / "content" / "a.md").symlink_to(elsewhere / "a.md")
     with pytest.raises(OSError):
         source.read("content/a.md")
+
+
+@pytest.mark.parametrize(
+    "value", ["!!python/object:os.system x", "!custom 1", "!!timestamp 2026-01-01", "!!set {a}", "!thing [1]"]
+)
+def test_frontmatter_refuses_tags_outside_the_core_schema(value: str) -> None:
+    assert "is not allowed" in (split_frontmatter(f"---\na: {value}\n---\n").error or "")
+
+
+def test_frontmatter_reads_core_tags() -> None:
+    split = split_frontmatter("---\na: !!str 5\nb: !!seq [1]\nc: !!map {d: 1}\ne: ! x\n---\n")
+    assert split.error is None
+    assert split.data == {"a": "5", "b": [1], "c": {"d": 1}, "e": "x"}
