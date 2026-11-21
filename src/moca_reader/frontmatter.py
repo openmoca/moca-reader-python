@@ -147,7 +147,9 @@ def load_core_schema(text: str) -> Any:
     events = iter(yaml.parse(text, Loader=yaml.SafeLoader))
 
     def node(event: yaml.Event, depth: int = 0) -> Any:
-        if depth > MAX_NESTING:
+        """``depth`` is the number of sequences and mappings the value lies inside."""
+        # Contract §3: a sequence or mapping at level 65 (inside 64 others) is refused before it is read.
+        if isinstance(event, (yaml.SequenceStartEvent, yaml.MappingStartEvent)) and depth >= MAX_NESTING:
             raise _error(f"frontmatter is nested more than {MAX_NESTING} levels deep", event)
         if isinstance(event, yaml.AliasEvent):
             # Alias expansion is a denial-of-service vector (Reader contract §3, "YAML aliases in frontmatter: 0").

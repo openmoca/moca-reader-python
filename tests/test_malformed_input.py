@@ -37,7 +37,12 @@ def deep(levels: int) -> str:
 
 
 def test_json_nesting_is_bounded() -> None:
+    assert MAX_NESTING == 64
     assert json_loads(deep(MAX_NESTING)) is not None
+    # The outermost object is level 1: 63 arrays inside it are 64 levels.
+    assert json_loads('{"a": ' + deep(63) + "}") == {"a": json_loads(deep(63))}
+    with pytest.raises(ValueError, match="nested more than"):
+        json_loads('{"a": ' + deep(64) + "}")
     with pytest.raises(ValueError, match="nested more than"):
         json_loads(deep(MAX_NESTING + 1))
     # Brackets inside strings are text.
@@ -54,7 +59,11 @@ def test_deep_json_in_a_manifest_or_an_attestation_is_reported(tmp_path: Path) -
 
 
 def test_deep_frontmatter_is_c002(tmp_path: Path) -> None:
-    assert split_frontmatter(f"---\na: {deep(MAX_NESTING)}\n---\n").error is None
+    # The top mapping is level 1: 63 flow sequences inside it are 64 levels; one more is refused.
+    assert split_frontmatter(f"---\na: {deep(MAX_NESTING - 1)}\n---\n").error is None
+    assert "nested more than 64" in (split_frontmatter(f"---\na: {deep(MAX_NESTING)}\n---\n").error or "")
+    block = "".join(f"{'  ' * i}k{i}:\n" for i in range(MAX_NESTING - 1)) + f"{'  ' * (MAX_NESTING - 1)}k: v\n"
+    assert split_frontmatter(f"---\n{block}---\n").error is None
     assert "nested more than" in (split_frontmatter(f"---\na: {deep(2000)}\n---\n").error or "")
     node = f"---\ntype: Note\nx: {deep(2000)}\n---\n\nText.\n"
     assert "C002_FRONTMATTER_INVALID" in codes(

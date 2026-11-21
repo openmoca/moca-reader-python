@@ -133,16 +133,16 @@ def _no_constants(name: str) -> Any:
     raise ValueError(f"{name} is not valid JSON")
 
 
-MAX_NESTING = 128
-"""The deepest nesting of arrays and objects (JSON) or sequences and mappings (frontmatter) this Reader reads.
-Deeper input is malformed. Package content is untrusted: a fixed bound keeps every step that walks a value
-independent of the call stack (Reader contract §3)."""
+MAX_NESTING = 64
+"""Contract §3: JSON and YAML frontmatter are nested at most 64 levels deep, counting the outermost array or object
+(sequence or mapping) as level 1. A text that opens a 65th is malformed. The limit is fixed, so every Reader agrees,
+and it is checked without parsing deeper, so the check never depends on the call stack."""
 
 _JSON_TOKEN = re.compile(r'"(?:[^"\\]++|\\.)*+"|[\[\]{}]')
 
 
 def json_nesting_exceeds(text: str, limit: int = MAX_NESTING) -> bool:
-    """Whether the arrays and objects in a JSON text nest deeper than ``limit``, strings skipped. One pass."""
+    """Whether a JSON text opens an array or object at a level past ``limit``, strings skipped. One pass."""
     depth = 0
     for m in _JSON_TOKEN.finditer(text):
         token = m[0]

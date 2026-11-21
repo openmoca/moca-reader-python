@@ -55,7 +55,9 @@ For moca-spec 0.7.0 ([moca-spec#5](https://github.com/openmoca/moca-spec/issues/
   entries per envelope; over either, `A001`.
 - `structure.ttl`: each member list is walked once, and the cells reached from every `skos:memberList` count toward
   `maxTriples` (`O001`).
-- Malformed input is reported, never raised: JSON and frontmatter nested more than 128 levels deep are malformed;
+- Malformed input is reported, never raised: JSON (`moca.json`, attestations and their statements, `moca-enc.json`,
+  a sidecar's `index.json` and payload lines) and frontmatter nested more than 64 levels deep, counting the outermost
+  object or mapping, are malformed with the code each file has for text that does not parse (contract §3);
   numeric character references of any length are read; dates within a day of year 1 or 9999 are read; an envelope
   entry that cannot be read is `P002`, a sidecar entry `S001`.
 - Linear scans of package text: Markdown link targets, the Markdown and HTML evidence normalisers and WebVTT cue

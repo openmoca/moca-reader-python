@@ -125,7 +125,7 @@ asks:
 | Class | Reader |
 | Contract version | 0.7.0 |
 | Implemented | Archives, host sources, DSSE attestations, sidecars (lexical and dense), the ontology profile, creators' terms and the terms gate |
-| Limits | The contract §3 defaults (`moca_reader.source.DEFAULT_LIMITS`, set with `limits=`), with at most 256 attestation files of 1 MiB each. JSON and frontmatter nested more than 128 levels deep are malformed |
+| Limits | The contract §3 defaults (`moca_reader.source.DEFAULT_LIMITS`, set with `limits=`), with at most 256 attestation files of 1 MiB each. JSON and frontmatter nested more than 64 levels deep (fixed, contract §3) are malformed |
 | Encryption | `read_package(..., decryptor=AGE_DECRYPTOR, key_provider=...)`, with `AGE_DECRYPTOR` from `moca_reader.age` (on `cryptography`, already a dependency). Without a decryptor, an envelope is recognised and reported with `E001`, and nothing inside it is exposed. `bind_envelope_sidecar` opens an envelope's `index.age` the same way. Decrypted bytes stay in memory, and are zeroed once read, so an opened envelope's `result.source` is `None` |
 | Sigstore | Offline only, with the `sigstore` extra (`pip install moca-reader[sigstore]`), against the host trust root's `sigstore.trustedRoot`. Without the extra, or without a trusted root, a `*.sigstore.json` attestation is unverifiable (`A003`). There is no online mode: refresh the trusted root yourself (moca-spec attestations §6) |
 
