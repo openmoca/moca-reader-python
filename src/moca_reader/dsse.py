@@ -56,6 +56,10 @@ def decode_base64(text: Any) -> bytes | None:
     return base64.b64decode(body.replace("-", "+").replace("_", "/") + "=" * (-len(body) % 4))
 
 
+MAX_SIGNATURES = 16
+"""Attestations §7: the most signature entries one envelope may hold. An envelope with more is malformed."""
+
+
 def verify_envelope(envelope: Any, resolve_public_key: Callable[[str], str | None]) -> EnvelopeResult:
     if (
         not isinstance(envelope, dict)
@@ -65,6 +69,8 @@ def verify_envelope(envelope: Any, resolve_public_key: Callable[[str], str | Non
         or len(envelope["signatures"]) == 0
     ):
         return EnvelopeResult(False, "malformed DSSE envelope")
+    if len(envelope["signatures"]) > MAX_SIGNATURES:
+        return EnvelopeResult(False, f"more than {MAX_SIGNATURES} signature entries")
     payload = decode_base64(envelope["payload"])
     if payload is None:
         return EnvelopeResult(False, "envelope payload is not valid base64")

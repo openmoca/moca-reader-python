@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+from collections.abc import Iterator
 from functools import cache
 from importlib.resources import files
 from typing import Any
@@ -20,6 +21,7 @@ _FILES = {
     "searchHit": "search-hit",
     "structure": "structure",
     "mocaEnc": "moca-enc",
+    "terms": "terms",
 }
 
 
@@ -44,6 +46,26 @@ def validate_against(name: str, value: Any) -> list[str]:
         if msg not in out:
             out.append(msg)
     return out
+
+
+def schema_errors(name: str, value: Any) -> Iterator[tuple[str, list[str], Any, dict[str, Any], str]]:
+    """Structured errors, as Ajv reports them with ``allErrors``: ``(keyword, path, instance, schema, message)``,
+    where ``schema`` is the subschema holding the keyword. A failed ``oneOf`` or ``anyOf`` gives its branches'
+    errors, not its own (terms, contract §15)."""
+    pending = list(_validator(name).iter_errors(_without_non_finite(value)))
+    while pending:
+        err = pending.pop(0)
+        if err.validator in ("oneOf", "anyOf"):
+            pending[0:0] = list(err.context or [])
+            continue
+        schema_at: Any = err.schema
+        yield (
+            str(err.validator),
+            [str(p) for p in err.absolute_path],
+            err.instance,
+            schema_at if isinstance(schema_at, dict) else {},
+            err.message,
+        )
 
 
 def _without_non_finite(v: Any) -> Any:

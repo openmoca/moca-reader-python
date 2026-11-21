@@ -14,7 +14,7 @@ from typing import Any
 
 import yaml
 
-from ._js import js_trim, number_to_string
+from ._js import MAX_NESTING, js_trim, number_to_string
 from .digest import utf8
 
 _OPEN = re.compile(r"^---[ \t]*\r?\n")
@@ -72,6 +72,17 @@ _FLOAT = re.compile(r"^[-+]?(?:\.[0-9]+|[0-9]+(?:\.[0-9]*)?)(?:[eE][-+]?[0-9]+)?
 _INF = re.compile(r"^[-+]?\.(?:inf|Inf|INF)\Z")
 _NAN = re.compile(r"^\.(?:nan|NaN|NAN)\Z")
 _STR_TAG = "tag:yaml.org,2002:str"
+# The YAML 1.2 core schema's tags, and "!" (non-specific). Any other explicit tag is refused: nothing is built
+# from a tag, and a Reader with a stricter YAML library would refuse it too.
+_CORE_TAGS = frozenset(
+    {None, "!", *(f"tag:yaml.org,2002:{t}" for t in ("str", "int", "float", "bool", "null", "seq", "map"))}
+)
+
+
+def _check_tag(event: yaml.NodeEvent) -> None:
+    tag = getattr(event, "tag", None)
+    if tag not in _CORE_TAGS:
+        raise _error(f"the YAML tag {tag} is not allowed in frontmatter", event)
 
 
 class _Error(yaml.MarkedYAMLError):
@@ -98,6 +109,7 @@ def _integer(text: str, digits: str, base: int) -> int | float:
 
 
 def _resolve(event: yaml.ScalarEvent) -> Any:
+    _check_tag(event)
     value = event.value
     # Quoted and block scalars, and explicitly tagged strings, are always strings.
     if event.style is not None or event.tag in (_STR_TAG, "!"):
@@ -134,18 +146,24 @@ def load_core_schema(text: str) -> Any:
     """Loads one YAML document with the YAML 1.2 core schema; aliases and duplicate keys are errors."""
     events = iter(yaml.parse(text, Loader=yaml.SafeLoader))
 
-    def node(event: yaml.Event) -> Any:
+    def node(event: yaml.Event, depth: int = 0) -> Any:
+        """``depth`` is the number of sequences and mappings the value lies inside."""
+        # Contract §3: a sequence or mapping at level 65 (inside 64 others) is refused before it is read.
+        if isinstance(event, (yaml.SequenceStartEvent, yaml.MappingStartEvent)) and depth >= MAX_NESTING:
+            raise _error(f"frontmatter is nested more than {MAX_NESTING} levels deep", event)
         if isinstance(event, yaml.AliasEvent):
             # Alias expansion is a denial-of-service vector (Reader contract §3, "YAML aliases in frontmatter: 0").
             raise _error("YAML aliases are not allowed in frontmatter", event)
         if isinstance(event, yaml.ScalarEvent):
             return _resolve(event)
+        if isinstance(event, (yaml.SequenceStartEvent, yaml.MappingStartEvent)):
+            _check_tag(event)
         if isinstance(event, yaml.SequenceStartEvent):
             out: list[Any] = []
             for e in events:
                 if isinstance(e, yaml.SequenceEndEvent):
                     return out
-                out.append(node(e))
+                out.append(node(e, depth + 1))
         if isinstance(event, yaml.MappingStartEvent):
             mapping: dict[str, Any] = {}
             for e in events:
@@ -156,7 +174,7 @@ def load_core_schema(text: str) -> Any:
                 key = _key_text(_resolve(e))
                 if key in mapping:
                     raise _error(f'duplicated mapping key "{key}"', e)
-                mapping[key] = node(next(events))
+                mapping[key] = node(next(events), depth + 1)
         raise _error(f"unexpected YAML event {type(event).__name__}", event)
 
     first = next(events)  # StreamStart

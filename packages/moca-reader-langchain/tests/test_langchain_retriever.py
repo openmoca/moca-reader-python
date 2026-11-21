@@ -7,7 +7,16 @@ from pathlib import Path
 
 from moca_reader_langchain import MocaRetriever
 
-from moca_reader import FLAT_FIELDS, Library, MemoryStoreBackend, Search, StoreScope, package_state
+from moca_reader import (
+    FLAT_FIELDS,
+    LexicalBackend,
+    Library,
+    MemoryStoreBackend,
+    Search,
+    StoreScope,
+    package_state,
+    read_package,
+)
 from moca_reader.schemas import validate_against
 
 REFUND = "https://example.com/moca/support-kb@4.2.0#refund-window.md"
@@ -63,3 +72,33 @@ def test_the_readme_example_runs(moca_spec: Path, monkeypatch: object) -> None:
         ),
         {},
     )
+
+
+def _terms_search(root: Path) -> Search:
+    """A package whose terms keep one node away from third parties' models."""
+    root.mkdir()
+    terms = {"nodes": [{"paths": ["content/private.md"], "ai": {"allowed": {"provider": False}}}]}
+    manifest = {"id": "https://example.com/t", "version": "1.0.0", "title": "T", "terms": terms}
+    (root / "moca.json").write_text(json.dumps(manifest))
+    (root / "content").mkdir()
+    for name in ("public", "private"):
+        (root / "content" / f"{name}.md").write_text(f"---\ntype: Note\ntitle: {name}\n---\n\nRefunds, {name}.\n")
+    library = Library().add(read_package(str(root)))
+    return Search(library, LexicalBackend(library))
+
+
+def test_terms_apply_by_default_for_a_third_partys_model(tmp_path: Path) -> None:
+    search = _terms_search(tmp_path / "p")
+    paths = [
+        d.metadata["moca_citation"]["node"]["path"] for d in MocaRetriever(search=search, limit=10).invoke("refunds")
+    ]
+    assert paths == ["public.md"]
+    assert search.diagnostics[0].code == "U004_TERMS_EXCLUDED"
+    on_device = MocaRetriever(search=search, limit=10, destination="device").invoke("refunds")
+    assert sorted(d.metadata["moca_citation"]["node"]["path"] for d in on_device) == ["private.md", "public.md"]
+
+
+def test_the_hosts_rating_request_is_added(public_search: Search) -> None:
+    assert MocaRetriever(search=public_search, terms={"rating": {"explicit": False}}).invoke("refund window") == []
+    docs = MocaRetriever(search=public_search).invoke("refund window")
+    assert docs[0].metadata["moca_citation"]["terms"]["ai"]["allowed"]["provider"]["value"] is True

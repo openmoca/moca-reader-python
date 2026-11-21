@@ -48,7 +48,12 @@ def parse_date(value: Any) -> datetime | None:
         parsed = datetime.fromisoformat(value.upper().replace("Z", "+00:00"))
     except ValueError:
         return None
-    return parsed.astimezone(UTC)
+    try:
+        return parsed.astimezone(UTC)
+    except OverflowError:
+        # Within a day of year 1 or year 9999, the offset moves the instant outside what datetime holds. It is
+        # still an instant, before or after every other: the nearest one datetime holds stands for it.
+        return datetime.min.replace(tzinfo=UTC) if parsed.year == 1 else datetime.max.replace(tzinfo=UTC)
 
 
 def effective_window(
@@ -128,10 +133,35 @@ def _no_constants(name: str) -> Any:
     raise ValueError(f"{name} is not valid JSON")
 
 
+MAX_NESTING = 64
+"""Contract §3: JSON and YAML frontmatter are nested at most 64 levels deep, counting the outermost array or object
+(sequence or mapping) as level 1. A text that opens a 65th is malformed. The limit is fixed, so every Reader agrees,
+and it is checked without parsing deeper, so the check never depends on the call stack."""
+
+_JSON_TOKEN = re.compile(r'"(?:[^"\\]++|\\.)*+"|[\[\]{}]')
+
+
+def json_nesting_exceeds(text: str, limit: int = MAX_NESTING) -> bool:
+    """Whether a JSON text opens an array or object at a level past ``limit``, strings skipped. One pass."""
+    depth = 0
+    for m in _JSON_TOKEN.finditer(text):
+        token = m[0]
+        if token in "[{":
+            depth += 1
+            if depth > limit:
+                return True
+        elif token in "]}":
+            depth -= 1
+    return False
+
+
 def json_loads(text: str, unique_keys: bool = False) -> Any:
     """``JSON.parse``: NaN and Infinity are not JSON. With ``unique_keys``, a repeated member name raises ValueError
-    (I-JSON, RFC 7493)."""
+    (I-JSON, RFC 7493). Arrays and objects nested deeper than MAX_NESTING raise ValueError."""
     import json
+
+    if json_nesting_exceeds(text):
+        raise ValueError(f"arrays and objects are nested more than {MAX_NESTING} levels deep")
 
     def pairs(items: list[tuple[str, Any]]) -> dict[str, Any]:
         out: dict[str, Any] = {}

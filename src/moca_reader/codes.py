@@ -97,6 +97,10 @@ CODES: dict[str, tuple[str, str]] = {
         "A package attestation names this id and version with a different digest: the content changed after it was signed.",
     ),
     "A009_SIGNATURE_REQUIRED": (ERROR, "The host requires a valid package attestation and the package has none."),
+    "A010_SIGNER_NOT_FOR_PACKAGE": (
+        ERROR,
+        "A package attestation verifies, but its signer has `ids` in the trust root that do not cover this package id.",
+    ),
     "R001_MEMBER_UNRESOLVED": (WARNING, "A member could not be resolved by the host resolver."),
     "R002_MEMBER_DIGEST_MISMATCH": (ERROR, "A resolved member does not match its pinned digest."),
     "R003_MEMBER_CYCLE": (ERROR, "Members form a cycle."),
@@ -156,6 +160,23 @@ CODES: dict[str, tuple[str, str]] = {
         "A search stopped at a bound the host set before limit records passed the gate; better-matching records that "
         "pass may exist.",
     ),
+    # Creators' terms (contract §15)
+    "U001_TERMS_INVALID": (
+        WARNING,
+        "A field of terms is malformed. The package stays valid; the field counts as its strictest value when terms "
+        "are applied.",
+    ),
+    "U002_TERMS_LOOSENED": (
+        WARNING,
+        "A terms.nodes entry, or a composing package, is looser than the package for a permission; the stricter value "
+        "stands.",
+    ),
+    "U003_TERMS_UNKNOWN_VALUE": (
+        WARNING,
+        "A terms field has a value this version does not know. It is exposed, and counts as its strictest value when "
+        "terms are applied.",
+    ),
+    "U004_TERMS_EXCLUDED": (INFO, "A search's terms request removed records; the finding counts them by reason."),
 }
 
 # Codes that are no longer emitted. Codes are never reused.

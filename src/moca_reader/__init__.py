@@ -35,6 +35,7 @@ from .strategies.diversify import diversify
 from .strategies.ontology_guided import ontology_guided
 from .structure import structure_view
 from .structure_ops import StructureIndex
+from .terms import terms_request
 
 __version__ = "0.7.0"
 
@@ -86,4 +87,5 @@ __all__ = [
     "selector_matches",
     "similarity",
     "structure_view",
+    "terms_request",
 ]

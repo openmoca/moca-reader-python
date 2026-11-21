@@ -28,6 +28,26 @@ class SidecarBinding:
     diagnostics: list[Diagnostic] = field(default_factory=list)
 
 
+class _Unreadable(Exception):
+    """An entry of the sidecar that could not be read."""
+
+
+def _guarded(source: Any) -> Any:
+    """The source, whose reads raise _Unreadable for an entry that cannot be read."""
+
+    class Guarded:
+        def __init__(self) -> None:
+            self.list = source.list
+
+        def read(self, path: str) -> bytes:
+            try:
+                return bytes(source.read(path))
+            except (OSError, KeyError, TargetError) as err:
+                raise _Unreadable(f'"{path}" could not be read: {err}') from err
+
+    return Guarded()
+
+
 def bind_sidecar(target: Any, pkg: PackageResult, strict: bool = False) -> SidecarBinding:
     """Checks a sidecar against a package and returns the chunks a Library can search.
 
@@ -36,7 +56,17 @@ def bind_sidecar(target: Any, pkg: PackageResult, strict: bool = False) -> Sidec
     diagnostics = Diagnostics(strict)
     out = SidecarBinding(diagnostics=diagnostics.items)
     try:
-        source = open_source(target)
+        return _bind_sidecar(target, pkg, diagnostics, out)
+    except _Unreadable as err:
+        # An entry that cannot be read leaves the sidecar unusable; the package is unaffected.
+        diagnostics.add("S001_SIDECAR_INVALID", str(err))
+        out.usable, out.chunks = False, []
+        return out
+
+
+def _bind_sidecar(target: Any, pkg: PackageResult, diagnostics: Diagnostics, out: SidecarBinding) -> SidecarBinding:
+    try:
+        source = _guarded(open_source(target))
         listed = {e.path: e for e in source.list() if e.kind == "file"}
     except TargetError as err:
         diagnostics.add("S001_SIDECAR_INVALID", str(err))

@@ -7,13 +7,14 @@ scope) always runs last, so nothing either of them does can return content the p
 
 from __future__ import annotations
 
+import copy
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
-from ._js import js_string, timestamp, truthy
+from ._js import js_sorted, js_string, timestamp, truthy
 from .attestations import scope_covers
 from .audience import record_allowed
 from .citation import CitationRecord, RelationIndex, citation_for, passes_default_policy, pick_representation
@@ -22,6 +23,7 @@ from .diagnostics import Diagnostic, Diagnostics
 from .digest import utf8
 from .reading_order import ReadingOrder, passes_up_to
 from .state import refresh_record, state_index
+from .terms import UNSET, gate_reasons, rating_of, record_terms, resolve_ai, resolve_export
 
 if TYPE_CHECKING:
     from .library import Library
@@ -109,6 +111,8 @@ class _Context:
     # Package spec §5.6: what each loaded composing package binds its members to.
     composition: CompositionIndex
     findings: Diagnostics
+    # Contract §15.4: the terms gate's removals by reason, in the latest round; None without a terms request.
+    terms_excluded: dict[str, int] | None = None
 
 
 class Search:
@@ -123,6 +127,7 @@ class Search:
         hooks: SearchHooks | None = None,
         allow_unlabelled: bool = False,
         max_candidates: int | None = None,
+        terms_limits: dict[str, Any] | None = None,
     ) -> None:
         from .library import Library
 
@@ -161,6 +166,8 @@ class Search:
         # Contract §9.2: the host's bound on the candidates one search call examines; None for no bound.
         self.max_candidates = max_candidates
         self.hooks = hooks or SearchHooks()
+        # Contract §15.3 step 4: the host's own `ai` values, floors that only tighten.
+        self.terms_limits: Any = terms_limits if isinstance(terms_limits, (dict, list)) else UNSET
         # The findings of the latest search() call, such as S008 (Reader interface §5.1).
         self.diagnostics: list[Diagnostic] = []
 
@@ -174,8 +181,11 @@ class Search:
         concepts: Sequence[str] | None = None,
         scope: str | None = None,
         up_to: str | None = None,
+        terms: dict[str, Any] | None = None,
     ) -> list[CitationRecord]:
-        ctx = self._context(limit, include_all, locale, concepts, scope, up_to)
+        """``terms`` is the host's terms request (contract §15.4): ``{"ai": {"destination", "conditions", "use"},
+        "rating": {...}}``. Without it, terms remove nothing."""
+        ctx = self._context(limit, include_all, locale, concepts, scope, up_to, terms)
         if self.hooks.ingress is not None:
             _apply_ingress(ctx, self.hooks.ingress(query, ctx.hook_context))
         size, filters = self._plan(ctx)
@@ -192,15 +202,24 @@ class Search:
             passed = self._gate(candidates, ctx)
             want = ctx.caller["limit"]
             if len(passed) >= want or not isinstance(hits, list) or len(hits) < size:
-                return passed[:want]
+                return self._finish(passed, ctx)
             if self.max_candidates is not None and size >= self.max_candidates:
                 ctx.findings.add(
                     "S010_SEARCH_TRUNCATED",
                     f"stopped at maxCandidates {self.max_candidates} with {len(passed)} of {want} records",
                 )
                 self.diagnostics = ctx.findings.items
-                return passed
+                return self._finish(passed, ctx)
             size = size * 2 if self.max_candidates is None else min(size * 2, self.max_candidates)
+
+    def _finish(self, passed: list[CitationRecord], ctx: _Context) -> list[CitationRecord]:
+        """The records the caller keeps, and the terms gate's count by reason (U004, contract §15.4)."""
+        kept = passed[: ctx.caller["limit"]]
+        if ctx.terms_excluded:
+            counts = ", ".join(f"{k}: {n}" for k, n in js_sorted(ctx.terms_excluded.items(), key=lambda kv: kv[0]))
+            ctx.findings.add("U004_TERMS_EXCLUDED", f"the terms request removed records ({counts})")
+            self.diagnostics = ctx.findings.items
+        return kept
 
     def _context(
         self,
@@ -210,6 +229,7 @@ class Search:
         concepts: Sequence[str] | None,
         scope: str | None,
         up_to: str | None,
+        terms: Any = None,
     ) -> _Context:
         now = self.clock()
         index = self.library.relation_index() if self.library else None
@@ -223,6 +243,8 @@ class Search:
                 "concepts": tuple(concepts) if concepts else None,
                 "scope": scope,
                 "upTo": up_to,
+                # Contract §15.4: the terms request is the caller's; a hook can never widen it.
+                "terms": copy.deepcopy(terms) if isinstance(terms, (dict, list)) else None,
             }
         )
         request = dict(caller)
@@ -296,6 +318,7 @@ class Search:
             if pushdown
             and self.hooks.egress is None
             and not isinstance(request.get("upTo"), str)
+            and request.get("terms") is None
             and not (concepts and ctx.composition.has_bindings)
             else request["limit"] * self.overfetch
         )
@@ -402,6 +425,8 @@ class Search:
         """The gate: always last, whatever the backend and the hooks did. Every record that passes, best first; the
         caller keeps the limit."""
         request = ctx.caller
+        # Counted afresh each round: the last round's count is the one reported.
+        ctx.terms_excluded = {} if request.get("terms") is not None else None
         concepts = self._concepts(request)
         wanted = frozenset(concepts) if concepts else None
         late: dict[str, tuple[ReadingOrder, frozenset[str]] | None] = {}
@@ -426,16 +451,64 @@ class Search:
             if isinstance(up_to, str) and not self._passes_up_to(record, up_to, ctx, late):
                 continue
             span = record.get("span")
-            # Contract §9.2: one result per node representation and span.
+            # Contract §9.2: one result per node representation and span, the whole span: start and end.
             locale = record["node"].get("locale") or ""
-            key = f"{record['node'].get('ref')}\0{locale}\0{span.get('start', '') if isinstance(span, dict) else ''}"
+            start, end = (span.get("start", ""), span.get("end", "")) if isinstance(span, dict) else ("", "")
+            key = f"{record['node'].get('ref')}\0{locale}\0{_key_part(start)}\0{_key_part(end)}"
             if key in seen:
                 continue
+            # Contract §9.2 step 5.3 and §15.4: with a terms request, the terms gate.
+            kept = record
+            if ctx.terms_excluded is not None:
+                termed = self._terms(record, request["terms"], ctx)
+                if termed is None:
+                    continue
+                kept = termed
             seen.add(key)
-            out.append(record)
+            out.append(kept)
         if self.hooks.egress is None:
             out.sort(key=lambda r: -(r.get("score") or 0))
         return out
+
+    def _terms(self, record: CitationRecord, request: Any, ctx: _Context) -> CitationRecord | None:
+        """Contract §15.3-15.4: the record with its resolved terms, or None when the terms gate removes it (counted
+        by reason). A package with no terms result (its manifest failed its schema) has every field at its
+        strictest."""
+
+        from .reader import terms_source_of
+
+        def source_of(digest: Any) -> Any:
+            if self.library:
+                return terms_source_of(ctx.loaded.get(digest))
+            state = (self.states or {}).get(digest)
+            return state.get("terms") if isinstance(state, dict) else None
+
+        package = record["package"]
+        source = source_of(package.get("digest"))
+        # Contract §15.3 step 3: a composing package's terms apply only when its signers speak for the member, as for
+        # upTo (§9), or the host allows unsigned packages to. A composer with no terms result counts as setting
+        # nothing.
+        composites: list[Any] = []
+        for composer in ctx.composition.composers_of(package.get("digest")):
+            if not self.allow_unsigned and not scope_covers(
+                self._relation_scopes(composer.digest, ctx.loaded), package.get("id")
+            ):
+                continue
+            c = source_of(composer.digest)
+            if isinstance(c, dict) and truthy(c.get("terms")):
+                composites.append(c["terms"])
+        pkg = source if isinstance(source, dict) else _STRICTEST_SOURCE
+        path = record["node"].get("path")
+        path = path if isinstance(path, str) else ""
+        ai = resolve_ai(pkg, path, self.terms_limits, composites)
+        rating = rating_of(pkg.get("terms"), path)
+        reasons = gate_reasons(request if isinstance(request, dict) else {}, ai, rating)
+        if reasons:
+            assert ctx.terms_excluded is not None
+            for r in reasons:
+                ctx.terms_excluded[r] = ctx.terms_excluded.get(r, 0) + 1
+            return None
+        return {**record, "terms": record_terms(pkg.get("authority"), ai, rating, resolve_export(pkg, composites))}
 
     def _passes_up_to(
         self,
@@ -492,6 +565,30 @@ class Search:
             return have == want or want.startswith(f"{have}-") or have.startswith(f"{want}-")
         rep = pick_representation(node, locale)
         return bool((rep.locale or result.manifest.get("language")) == record["node"].get("locale"))
+
+
+# A package with no terms result: every field at its strictest (contract §15.3).
+_STRICTEST_SOURCE: dict[str, Any] = {
+    "terms": {
+        "ai": {
+            "allowed": {
+                "device": False,
+                "host": False,
+                "provider": False,
+                "training": False,
+                "machineTranslation": False,
+            },
+            "answerSources": "work",
+        },
+        "rights": {"export": {"allowed": False}},
+    },
+    "authority": "unverified",
+}
+
+
+def _key_part(value: Any) -> str:
+    """A span offset as JavaScript writes it into a string key."""
+    return value if isinstance(value, str) else js_string(value)
 
 
 def _late_concepts(order: ReadingOrder, up_to: str) -> frozenset[str]:

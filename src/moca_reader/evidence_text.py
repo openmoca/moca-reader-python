@@ -39,16 +39,126 @@ def _decode_entities(text: str) -> str:
     def entity(m: re.Match[str]) -> str:
         e = m[1]
         if e[0] == "#":
-            cp = int(e[2:], 16) if e[1] in "xX" else int(e[1:], 10)
+            # Leading zeros count for nothing; more digits than any code point has is not a code point.
+            hexadecimal = e[1] in "xX"
+            digits = (e[2:] if hexadecimal else e[1:]).lstrip("0") or "0"
+            if len(digits) > (6 if hexadecimal else 7):
+                return m[0]
+            cp = int(digits, 16 if hexadecimal else 10)
             return chr(cp) if cp <= 0x10FFFF else m[0]
         return _ENTITIES.get(e.lower(), m[0])
 
     return _ENTITY.sub(entity, text)
 
 
+# ECMAScript's white space (\s), as a character class body.
+JS_SPACE_CLASS = "\t\n\v\f\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff"
+
+
+def forward_finder(text: str, needle: str) -> Callable[[int], int]:
+    """A forward search for one string that remembers its last answer, so a run of searches from rising positions
+    costs one pass over the text in total, not one pass each."""
+    at = -2  # the last index found; -1 once there is none left
+
+    def find(start: int) -> int:
+        nonlocal at
+        if at == -1:
+            return -1
+        if at < start:
+            at = text.find(needle, start)
+        return at
+
+    return find
+
+
+def _char(text: str, i: int) -> str:
+    """``text[i]`` in JavaScript: empty past either end."""
+    return text[i] if 0 <= i < len(text) else ""
+
+
+def _link_text(source: str) -> str:
+    """Step 1 of markdown_text, in one pass: what ``re.sub(r"!?\\[([^\\]]*)\\]\\([^)]*\\)", r"\\1", source)``
+    gives, without that expression's repeated scans."""
+    opening, closing, paren = forward_finder(source, "["), forward_finder(source, "]"), forward_finder(source, ")")
+    out: list[str] = []
+    pos = 0
+    while True:
+        i = opening(pos)
+        if i < 0:
+            break
+        j = closing(i + 1)
+        if j < 0:
+            break
+        end = paren(j + 2) if _char(source, j + 1) == "(" else -1
+        if end < 0:
+            # No bracket between i and j opens a link either: they all close at j.
+            if _char(source, j + 1) == "(":
+                break  # and with no ")" left, nothing later is a link
+            out.append(source[pos : j + 1])
+            pos = j + 1
+            continue
+        start = i - 1 if i > pos and source[i - 1] == "!" else i
+        out.append(source[pos:start] + source[i + 1 : j])
+        pos = end + 1
+    return "".join(out) + source[pos:]
+
+
+def strip_tags(text: str) -> str:
+    """Every ``<...>`` removed, in one pass: what ``re.sub(r"<[^>]*>", "", text)`` gives."""
+    out: list[str] = []
+    pos = 0
+    while True:
+        i = text.find("<", pos)
+        if i < 0:
+            break
+        j = text.find(">", i + 1)
+        if j < 0:
+            break
+        out.append(text[pos:i])
+        pos = j + 1
+    return "".join(out) + text[pos:]
+
+
+_OPENING = re.compile(r"<(script|style)\b", re.I | re.A)
+_CLOSING = {name: re.compile(f"</{name}[{JS_SPACE_CLASS}]*>", re.I | re.A) for name in ("script", "style")}
+
+
+def _strip_script_and_style(source: str) -> str:
+    """script and style elements removed, in one pass: what the expression
+    ``<(script|style)\\b[^>]*>[\\s\\S]*?</\\1\\s*>`` (case-insensitive) removes."""
+    none = {"script": False, "style": False}
+    gt = forward_finder(source, ">")
+    out: list[str] = []
+    pos = 0
+    while True:
+        m = _OPENING.search(source, pos)
+        if m is None:
+            break
+        name = m[1].lower()
+        tag_end = gt(m.end())
+        if tag_end < 0:
+            break
+        end = -1
+        if not none[name]:
+            closed = _CLOSING[name].search(source, tag_end + 1)
+            end = closed.end() if closed else -1
+            if end < 0:
+                none[name] = True
+        if end < 0:
+            # Not closed: the opening tag stays, and the search goes on after its name.
+            if none["script"] and none["style"]:
+                break
+            out.append(source[pos : m.end()])
+            pos = m.end()
+            continue
+        out.append(source[pos : m.start()])
+        pos = end
+    return "".join(out) + source[pos:]
+
+
 def markdown_text(source: str) -> str:
     """Markdown to text: images and links become their text; heading and list markers go; *, _ and ` go."""
-    text = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", source)
+    text = _link_text(source)
     lines = [
         re.sub(
             r"^[\t\n\v\f\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]*(?:[-*+]|[0-9]+[.)])[\t\n\v\f\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]+",
@@ -66,13 +176,7 @@ def markdown_text(source: str) -> str:
 
 def html_text(source: str) -> str:
     """HTML to text: script and style elements removed, tags removed, entities decoded."""
-    without = re.sub(
-        r"<(script|style)\b[^>]*>[\s\S]*?</\1[\t\n\v\f\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]*>",
-        "",
-        source,
-        flags=re.I | re.A,
-    )
-    return _decode_entities(re.sub(r"<[^>]*>", "", without))
+    return _decode_entities(strip_tags(_strip_script_and_style(source)))
 
 
 def _number(text: str) -> float:
@@ -110,7 +214,7 @@ def webvtt(source: str) -> tuple[list[Cue], str]:
         start_text, _, rest = lines[at].partition("-->")
         start = _seconds(start_text)
         end = _seconds((js_split_ws(rest) or [""])[0])
-        text = "\n".join(_decode_entities(re.sub(r"<[^>]*>", "", line)) for line in lines[at + 1 :])
+        text = "\n".join(_decode_entities(strip_tags(line)) for line in lines[at + 1 :])
         if math.isfinite(start) and math.isfinite(end):
             cues.append(Cue(start, end, text))
     return cues, "\n".join(c.text for c in cues)

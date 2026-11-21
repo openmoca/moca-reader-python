@@ -239,7 +239,10 @@ def read_envelope(
     for name in (PACKAGE_AGE, INDEX_AGE):
         if name in files and methods.get(files[name]) != _STORED:
             return fail("E005_ENVELOPE_INVALID", f"{name} must be stored, not compressed", name)
-    marker, error = _parse_marker(source.read(files[MARKER]))
+    try:
+        marker, error = _parse_marker(source.read(files[MARKER]))
+    except (OSError, KeyError) as err:
+        return fail("P002_UNREADABLE_ENTRY", f'"{MARKER}" could not be read: {err}', MARKER)
     if marker is None:
         return fail("E005_ENVELOPE_INVALID", f"moca-enc.json is invalid: {error}", MARKER)
     fmt = marker["format"]
@@ -247,8 +250,12 @@ def read_envelope(
     result.envelope = {"format": fmt, "opened": False, **({"outline": copy.deepcopy(outline)} if outline else {})}
 
     # Steps 3-6.
-    structure = source.read(files[STRUCTURE_COPY]) if STRUCTURE_COPY in files else None
-    cover = (covers[0], source.read(files[covers[0]])) if covers else None
+    try:
+        package_bytes = source.read(files[PACKAGE_AGE])
+        structure = source.read(files[STRUCTURE_COPY]) if STRUCTURE_COPY in files else None
+        cover = (covers[0], source.read(files[covers[0]])) if covers else None
+    except (OSError, KeyError) as err:
+        return fail("P002_UNREADABLE_ENTRY", f"an envelope entry could not be read: {err}")
     max_image_bytes = {**DEFAULT_LIMITS, **limits}["maxImageBytes"]
     if cover is not None and len(cover[1]) > max_image_bytes:
         return fail(
@@ -256,9 +263,7 @@ def read_envelope(
             f"{cover[0]} is {len(cover[1])} bytes, over the limit of {max_image_bytes}",
             cover[0],
         )
-    plain, code, message = open_age_entry(
-        source.read(files[PACKAGE_AGE]), "package", outline, decryptor, key_provider, limits
-    )
+    plain, code, message = open_age_entry(package_bytes, "package", outline, decryptor, key_provider, limits)
     if plain is None:
         assert code is not None and message is not None
         return fail(code, message, PACKAGE_AGE)
@@ -318,8 +323,13 @@ def bind_envelope_sidecar(
     if entry.method != _STORED:
         diagnostics.add("E005_ENVELOPE_INVALID", "index.age must be stored, not compressed", INDEX_AGE)
         return out
+    try:
+        index_bytes = source.read(INDEX_AGE)
+    except (OSError, KeyError) as err:
+        diagnostics.add("S001_SIDECAR_INVALID", f'"{INDEX_AGE}" could not be read: {err}', INDEX_AGE)
+        return out
     plain, code, message = open_age_entry(
-        source.read(INDEX_AGE), "index", envelope.get("outline"), decryptor, key_provider, limits or {}
+        index_bytes, "index", envelope.get("outline"), decryptor, key_provider, limits or {}
     )
     if plain is None:
         assert code is not None and message is not None

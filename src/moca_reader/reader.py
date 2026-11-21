@@ -47,6 +47,7 @@ from .reading_order import ReadingOrder, resolve_reading_order
 from .reviews import review_status_of
 from .source import DEFAULT_LIMITS, PackageSource, TargetError, open_source
 from .structure import PackageStructure, read_structure
+from .terms import UNSET, authority_of, check_terms, loosened_nodes
 from .unicode import normalize
 
 # A009 invalidates: it is only raised when the host requires a signature.
@@ -108,6 +109,9 @@ class PackageResult:
     reading_order: str | None = None
     # Package spec §4.12: informative, as written, when the manifest passes its schema.
     date_published: str | None = None
+    date_packaged: str | None = None
+    # Contract §15.1: {"declared"?, "problems", "authority"} when the manifest passes its schema; else None.
+    terms: dict[str, Any] | None = None
     # Attestations §7.1: {"originalDigest", "issuers", "changedFiles"} for an issued copy that passed verification.
     issued_copy: dict[str, Any] | None = None
     _reading_order: ReadingOrder | None = field(default=None, repr=False)
@@ -265,6 +269,11 @@ def _read(
         diagnostics.add("M001_MANIFEST_INVALID_JSON", f"moca.json is not valid UTF-8 JSON: {err}", MANIFEST)
         return _finish(result, diagnostics)
     result.manifest = manifest
+    # Contract §5: a manifest that is JSON but not an object fails its schema, and there is nothing more to read.
+    if not isinstance(manifest, dict):
+        check_manifest(manifest, diagnostics, options.known_profiles)
+        result.manifest = None
+        return _finish(result, diagnostics)
     if envelope_check is not None:
         why = outline_mismatch(envelope_check, manifest, data, options.limits["maxImageBytes"])
         if why:
@@ -278,8 +287,20 @@ def _read(
             result.apps = list(manifest["apps"])
         if isinstance(manifest.get("datePublished"), str):
             result.date_published = manifest["datePublished"]
+        if isinstance(manifest.get("datePackaged"), str):
+            result.date_packaged = manifest["datePackaged"]
         # Package spec §4.6-4.8: held aside, and exposed by _finish only when the package is valid.
         result._catalogue = check_catalogue(manifest, data, diagnostics, options.limits["maxImageBytes"])
+        # Package spec §4.14: terms are checked inside; a problem is a warning, never M002.
+        declared = manifest.get("terms", UNSET)
+        problems = check_terms(declared)
+        for p in problems:
+            diagnostics.add(p["code"], p["message"], MANIFEST)
+        for loose in loosened_nodes(declared):
+            diagnostics.add("U002_TERMS_LOOSENED", loose["message"], MANIFEST)
+        terms_problems: list[dict[str, str]] | None = [{"code": p["code"], "path": p["path"]} for p in problems]
+    else:
+        terms_problems = None
     profiles = get(manifest, "profiles")
     result.profiles = list(profiles) if isinstance(profiles, dict) else []
     version = get(manifest, "mocaVersion")
@@ -344,6 +365,13 @@ def _read(
             MANIFEST,
         )
     _check_relation_authority(result, diagnostics)
+    # Contract §15.1-15.2: the terms as written, their problems, and who stated them.
+    if terms_problems is not None:
+        result.terms = {
+            **({"declared": manifest["terms"]} if "terms" in manifest else {}),
+            "problems": terms_problems,
+            "authority": authority_of(result.signers),
+        }
     _resolve_members(result, members, options, stack, diagnostics, budget)
     return _finish(result, diagnostics)
 
@@ -389,8 +417,21 @@ def _read_attestations(
         p for p in data if p.startswith(f"{ATTESTATIONS_DIR}/") and re.search(r"\.(dsse|sigstore)\.json\Z", p)
     )
     pending: list[tuple[str, ParsedAttestation, str, dict[str, Any]]] = []
+    # Contract §3: attestation files are bounded in number and in size, so verifying them is bounded work.
+    max_files, max_bytes = options.limits["maxAttestations"], options.limits["maxAttestationBytes"]
+    if len(attestation_files) > max_files:
+        diagnostics.add(
+            "A001_ATTESTATION_MALFORMED",
+            f"the package has {len(attestation_files)} attestation files, over the {max_files} limit; none is read",
+            ATTESTATIONS_DIR,
+        )
+        return
     for file in attestation_files:
-        parsed = parse_attestation(file, data[file])
+        parsed = (
+            f"larger than the {max_bytes}-byte limit for an attestation file"
+            if len(data[file]) > max_bytes
+            else parse_attestation(file, data[file])
+        )
         if isinstance(parsed, str):
             diagnostics.add("A001_ATTESTATION_MALFORMED", parsed, file)
             result.attestations.append({"file": file, "outcome": "malformed", "reason": parsed})
@@ -464,6 +505,17 @@ def _read_attestations(
                 diagnostics.add(
                     "A008_PACKAGE_DIGEST_MISMATCH" if tampered else "A002_ATTESTATION_INVALID",
                     f"package attestation does not match this package: {mismatch}",
+                    file,
+                )
+            elif sig.scoped and not scope_covers(sig.ids, get(manifest, "id")):
+                # Attestations §6: a signer with `ids` signs only the packages those ids cover. The signature is
+                # good, but this signer may not speak for this id, so the package is not signed by it.
+                record["outcome"] = "invalid"
+                record["reason"] = f"the signer's ids in the trust root do not cover {get(manifest, 'id')}"
+                diagnostics.add(
+                    "A010_SIGNER_NOT_FOR_PACKAGE",
+                    f"package attestation is signed by {sig.signer}, whose ids in the trust root do not cover "
+                    f"{get(manifest, 'id')}",
                     file,
                 )
             elif sig.signer is not None:
@@ -634,6 +686,15 @@ def _resolve_members(
             entry.status = "mismatch"
         else:
             entry.status = "resolved"
+
+
+def terms_source_of(result: PackageResult | None) -> dict[str, Any] | None:
+    """What resolving a result's terms needs (contract §15.3): its terms and authority; None without a terms
+    result."""
+    if result is None or result.terms is None:
+        return None
+    declared = result.terms.get("declared")
+    return {"terms": declared if declared is not None else {}, "authority": result.terms["authority"]}
 
 
 def _instant(value: str) -> float:
