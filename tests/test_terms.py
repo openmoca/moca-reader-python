@@ -7,6 +7,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from moca_reader import LexicalBackend, Library, Search, SearchHooks, read_package
 from moca_reader.terms import (
     UNSET,
@@ -19,6 +21,7 @@ from moca_reader.terms import (
     resolve_ai,
     resolve_export,
     rights_of,
+    terms_request,
 )
 
 NODE = "---\ntype: Note\ntitle: {title}\n---\n\n# {title}\n\nText about refunds.\n"
@@ -294,3 +297,14 @@ def test_de_duplication_keeps_spans_that_differ_only_in_their_end(tmp_path: Path
 
     records = Search(library, LexicalBackend(library), hooks=SearchHooks(egress=egress)).search("refunds")
     assert [r["span"]["end"] - r["span"]["start"] for r in records] == [4, 8]
+
+
+def test_terms_request_for_an_app_that_hands_records_to_a_model() -> None:
+    assert terms_request() == {"ai": {"destination": "provider"}}
+    assert terms_request("host", ["noTraining"]) == {"ai": {"destination": "host", "conditions": ["noTraining"]}}
+    rating = {"rating": {"explicit": False}}
+    assert terms_request(terms=rating) == {**rating, "ai": {"destination": "provider"}}
+    own = {"ai": {"destination": "device", "use": "summarise"}}
+    assert terms_request(terms=own) == own
+    with pytest.raises(ValueError, match="destination"):
+        terms_request("moon")

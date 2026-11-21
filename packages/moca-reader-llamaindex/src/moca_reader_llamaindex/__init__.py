@@ -12,13 +12,13 @@ instructions (Reader contract §12).
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from llama_index.core.callbacks import CallbackManager
 from llama_index.core.retrievers import BaseRetriever
 from llama_index.core.schema import NodeWithScore, QueryBundle, TextNode
 
-from moca_reader import CitationRecord, Search, flat_metadata
+from moca_reader import CitationRecord, Search, flat_metadata, terms_request
 
 __all__ = ["MocaRetriever", "node_id", "to_node"]
 __version__ = "0.7.0"
@@ -51,10 +51,11 @@ class MocaRetriever(BaseRetriever):
 
     ``search`` is the host's ``moca_reader.Search``; the other arguments are the search options for every call.
 
-    ``terms`` is the host's terms request (Reader contract §15.4), for example
-    ``{"ai": {"destination": "provider", "conditions": ["noTraining"]}}`` when the nodes go to a third party's model.
-    With it, the gate also removes records whose creator's terms do not allow that use. Without it, terms remove
-    nothing.
+    Nodes go to a model, so every search applies a terms request (Reader contract §15.4): the gate also removes
+    records whose creator's terms do not allow AI use at ``destination``. That is ``"provider"`` (a third party's
+    model) unless the app declares ``"device"`` (the person's own device) or ``"host"`` (the app's own service).
+    ``conditions`` are the provider conditions the app meets (``"noTraining"``, ``"noRetention"``). ``terms`` adds
+    to the request, such as a ``rating`` request; an ``ai`` in it is used as it is.
     """
 
     def __init__(
@@ -66,6 +67,8 @@ class MocaRetriever(BaseRetriever):
         concepts: list[str] | None = None,
         scope: str | None = None,
         include_all: bool = False,
+        destination: Literal["device", "host", "provider"] = "provider",
+        conditions: list[str] | None = None,
         terms: dict[str, Any] | None = None,
         callback_manager: CallbackManager | None = None,
     ) -> None:
@@ -77,7 +80,7 @@ class MocaRetriever(BaseRetriever):
             "locale": locale,
             "concepts": concepts,
             "scope": scope,
-            "terms": terms,
+            "terms": terms_request(destination, conditions, terms),
         }
 
     def _retrieve(self, query_bundle: QueryBundle) -> list[NodeWithScore]:

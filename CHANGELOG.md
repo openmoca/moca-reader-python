@@ -33,7 +33,11 @@ For moca-spec 0.7.0 ([moca-spec#5](https://github.com/openmoca/moca-spec/issues/
   must not end before it starts (`U001`).
 - `PackageResult.date_packaged` and `package.datePackaged` on records (package spec §4.12, informative).
 - `trust.generated.model` on records, when the node's `generated.model` is a string.
-- The LangChain and LlamaIndex retrievers take `terms`, passed to every search.
+- `terms_request(destination, conditions, terms)`: a terms request for an app that hands records to a model, `ai`
+  at `provider` unless the app declares `device` or `host`.
+- The LangChain and LlamaIndex retrievers apply a terms request to every search by default: destination `provider`,
+  unless the app declares `destination="device"` or `"host"`; `conditions` and `terms` (a rating request, say) add
+  to it.
 
 ### Changed (moca-spec 0.7.0)
 

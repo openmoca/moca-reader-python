@@ -11,14 +11,14 @@ never as instructions (Reader contract §12).
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from langchain_core.callbacks import CallbackManagerForRetrieverRun
 from langchain_core.documents import Document
 from langchain_core.retrievers import BaseRetriever
 from pydantic import ConfigDict
 
-from moca_reader import CitationRecord, Search, flat_metadata
+from moca_reader import CitationRecord, Search, flat_metadata, terms_request
 
 __all__ = ["MocaRetriever", "document_id", "to_document"]
 __version__ = "0.7.0"
@@ -45,10 +45,11 @@ class MocaRetriever(BaseRetriever):
     ``search`` is the host's ``moca_reader.Search``. The other fields are the search options for every call; they
     are the host's, set when the retriever is built.
 
-    ``terms`` is the host's terms request (Reader contract §15.4), for example
-    ``{"ai": {"destination": "provider", "conditions": ["noTraining"]}}`` when the documents go to a third party's
-    model. With it, the gate also removes records whose creator's terms do not allow that use. Without it, terms
-    remove nothing.
+    Documents go to a model, so every search applies a terms request (Reader contract §15.4): the gate also removes
+    records whose creator's terms do not allow AI use at ``destination``. That is ``"provider"`` (a third party's
+    model) unless the app declares ``"device"`` (the person's own device) or ``"host"`` (the app's own service).
+    ``conditions`` are the provider conditions the app meets (``"noTraining"``, ``"noRetention"``). ``terms`` adds
+    to the request, such as a ``rating`` request; an ``ai`` in it is used as it is.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -59,6 +60,8 @@ class MocaRetriever(BaseRetriever):
     concepts: list[str] | None = None
     scope: str | None = None
     include_all: bool = False
+    destination: Literal["device", "host", "provider"] = "provider"
+    conditions: list[str] | None = None
     terms: dict[str, Any] | None = None
 
     def _get_relevant_documents(self, query: str, *, run_manager: CallbackManagerForRetrieverRun) -> list[Document]:
@@ -69,6 +72,6 @@ class MocaRetriever(BaseRetriever):
             locale=self.locale,
             concepts=self.concepts,
             scope=self.scope,
-            terms=self.terms,
+            terms=terms_request(self.destination, self.conditions, self.terms),
         )
         return [to_document(r) for r in records]

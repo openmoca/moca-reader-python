@@ -481,3 +481,20 @@ def record_terms(authority: Any, ai: Mapping[str, Resolved], rating: Any, export
     if export is not None:
         out["rights"] = {"export": export}
     return out
+
+
+def terms_request(
+    destination: str = "provider",
+    conditions: Iterable[str] | None = None,
+    terms: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """A terms request (contract §15.4) for an app that hands records to a model: ``ai`` with the destination the
+    app declares (``provider``, a third party's model, unless it declares ``device`` or ``host``) and the provider
+    conditions it meets, plus anything else in ``terms`` (a ``rating`` request, say). An ``ai`` in ``terms`` is used
+    as it is. Used by the framework bindings, which apply it to every search."""
+    if destination not in DESTINATIONS:
+        raise ValueError(f"destination must be one of {', '.join(DESTINATIONS)}, not {destination!r}")
+    request = copy.deepcopy(dict(terms or {}))
+    listed = list(conditions or [])
+    request.setdefault("ai", {"destination": destination, **({"conditions": listed} if listed else {})})
+    return request

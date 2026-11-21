@@ -29,11 +29,13 @@ that. Use it anywhere LlamaIndex takes a retriever, such as a
 `RetrieverQueryEngine`.
 
 **Creators' terms.** A package can say how its work may be used with AI
-(package spec §4.14). Terms are applied only when you ask: pass your terms
-request as `terms`, for example
-`terms={"ai": {"destination": "provider", "conditions": ["noTraining"]}}` when
-the results go to a third party's model, and the gate also removes records
-whose terms do not allow that use. Without `terms`, terms remove nothing.
+(package spec §4.14). Results go to a model, so every search applies a terms
+request: the gate also removes records whose terms do not allow AI use at
+`destination`. That is `"provider"`, a third party's model, unless your app
+declares `destination="device"` (the person's own device) or
+`destination="host"` (your own service). Name the provider conditions you meet
+in `conditions` (`"noTraining"`, `"noRetention"`), and add a rating request
+with `terms={"rating": {...}}`.
 
 Each result is a `NodeWithScore` holding a `TextNode`:
 

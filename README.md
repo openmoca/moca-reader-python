@@ -56,6 +56,7 @@ same JSON every MOCA Reader produces (`citation-record.schema.json`).
 | `directory_resolver(dirs)` | A simple member resolver over folders. |
 | `TrustRoot` | A host trust root, from a path or a dict. |
 | `flat_metadata(record)` | The consuming guide's flat `moca_*` fields for a citation record, for vector stores. |
+| `terms_request(destination=, conditions=, terms=)` | A terms request for an app that hands records to a model: `ai` at `provider` unless it declares `device` or `host`. The framework bindings apply one to every search. |
 | `library.structure` | `concept`, `requires`, `required_by`, `parts`, `narrower`, `broader`, `related`, `sequence`, `descendants`, `nodes`. |
 
 The API is synchronous.
@@ -71,8 +72,9 @@ Separate packages, each a thin adapter over the Reader
 | [`moca-reader-llamaindex`](packages/moca-reader-llamaindex/README.md) | `MocaRetriever`: a LlamaIndex retriever returning scored nodes |
 
 Both wrap a `Search` you build, so the gate and your audience filter always
-apply, and carry the whole citation record and the consuming guide's flat
-`moca_*` fields in each result's metadata. `flat_metadata(record)` gives you
+apply, with a terms request for a third party's model unless you declare
+`destination="device"` or `"host"`. Each result's metadata carries the whole
+citation record and the consuming guide's flat `moca_*` fields. `flat_metadata(record)` gives you
 the same fields for your own vector store.
 
 ## Search by meaning with a standard model
