@@ -6,20 +6,29 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from ._js import js_sorted, utf16_key
-from .citation import CitationRecord, passes_default_policy
+from .citation import CitationRecord, citation_for, passes_default_policy, pick_representation
 from .composition import CompositionIndex, composition_of
 from .structure import Fact, StructureGraph, preferred
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-    from .library import Library
+    from .library import Library, LoadedPackage
 
 
 class StructureIndex:
-    def __init__(self, library: Library, overlay_facts: list[Fact] | None = None) -> None:
+    """``packages`` are the loaded packages whose structure is merged: every one, or, under a terms request, those
+    not closed for it (contract §10, "Under a terms request")."""
+
+    def __init__(
+        self,
+        library: Library,
+        overlay_facts: list[Fact] | None = None,
+        packages: list[LoadedPackage] | None = None,
+    ) -> None:
         self.library = library
-        facts = [f for p in library.packages if p.result.structure is not None for f in p.result.structure.facts]
+        self.packages = library.packages if packages is None else packages
+        facts = [f for p in self.packages if p.result.structure is not None for f in p.result.structure.facts]
         self.graph = StructureGraph([*facts, *(overlay_facts or [])])
 
     def _item(self, iri: str, at: dict[str, Any]) -> dict[str, Any]:
@@ -157,11 +166,25 @@ class StructureIndex:
                         wanted.add(e["iri"])
                         stack.append(e["iri"])
         # Package spec §5.6: a record is bound by its node's own concepts and by composition, as for search.
-        composition = CompositionIndex([(p.result.digest, composition_of(p.result)) for p in self.library.packages])
+        composition = CompositionIndex([(p.result.digest, composition_of(p.result)) for p in self.packages])
         wanted_set = frozenset(wanted)
         records = [
             r
-            for r in self.library.citations(locale, include_text=True)
+            for r in self._citations(locale)
             if composition.bound_to(r, wanted_set) and (include_all or passes_default_policy(r))
         ]
         return sorted(records, key=lambda r: utf16_key(r["node"]["ref"]))
+
+    def _citations(self, locale: str | None) -> list[CitationRecord]:
+        """Every node's citation record from this structure's packages, with its text, as Library.citations gives
+        it."""
+        if self.packages is self.library.packages:
+            return self.library.citations(locale, include_text=True)
+        index = self.library.relation_index()
+        now = self.library.clock()
+        out = []
+        for p in self.packages:
+            for node in p.result.nodes:
+                rep = pick_representation(node, locale)
+                out.append(citation_for(p.result, node, rep, now, index, rep.body))
+        return out

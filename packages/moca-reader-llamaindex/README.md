@@ -35,7 +35,14 @@ request: the gate also removes records whose terms do not allow AI use at
 declares `destination="device"` (the person's own device) or
 `destination="host"` (your own service). Name the provider conditions you meet
 in `conditions` (`"noTraining"`, `"noRetention"`), and add a rating request
-with `terms={"rating": {...}}`.
+with `terms={"rating": {...}}`. An `ai` in `terms` must be an object: the
+retriever never searches without one.
+
+**Ingest.** Embedding sends content to a model too. If you fill a store
+backend, use this package's `ingest(store, library)`: it passes the same kind
+of terms request, `destination="provider"` unless you declare where your
+embedder runs, so text a creator closed to that destination is never embedded
+or stored. The store reports what it left out as `U004_TERMS_EXCLUDED`.
 
 Each result is a `NodeWithScore` holding a `TextNode`:
 

@@ -5,7 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from moca_reader_langchain import MocaRetriever
+import pytest
+from moca_reader_langchain import MocaRetriever, ingest
 
 from moca_reader import (
     FLAT_FIELDS,
@@ -102,3 +103,35 @@ def test_the_hosts_rating_request_is_added(public_search: Search) -> None:
     assert MocaRetriever(search=public_search, terms={"rating": {"explicit": False}}).invoke("refund window") == []
     docs = MocaRetriever(search=public_search).invoke("refund window")
     assert docs[0].metadata["moca_citation"]["terms"]["ai"]["allowed"]["provider"]["value"] is True
+
+
+def test_a_caller_can_never_drop_the_ai_part(tmp_path: Path) -> None:
+    search = _terms_search(tmp_path / "p")
+    for dropped in (None, False, [], "none"):
+        with pytest.raises(ValueError, match="must be an object"):
+            MocaRetriever(search=search, terms={"ai": dropped})
+
+
+class _Recording:
+    name = "recording"
+    dimensions = 2
+
+    def __init__(self) -> None:
+        self.seen: list[str] = []
+
+    def embed(self, texts: list[str], role: str) -> list[list[float]]:
+        self.seen += texts
+        return [[1.0, 0.0] for _ in texts]
+
+
+def test_ingest_passes_a_terms_request_defaulting_to_provider(tmp_path: Path) -> None:
+    library = _terms_search(tmp_path / "p").library
+    assert library is not None
+    embedder = _Recording()
+    store = ingest(MemoryStoreBackend(embedder), library)
+    assert [r["hit"]["path"] for r in store.records] == ["public.md"]
+    assert not any("private" in t for t in embedder.seen)
+    assert [d.code for d in store.ingest_diagnostics] == ["U004_TERMS_EXCLUDED"]
+    assert len(ingest(MemoryStoreBackend(), library, destination="device").records) == 2
+    with pytest.raises(ValueError, match="destination"):
+        ingest(MemoryStoreBackend(), library, destination="moon")  # type: ignore[arg-type]

@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
-from ._js import js_sorted, js_string, timestamp, truthy
+from ._js import js_string, timestamp, truthy
 from .attestations import scope_covers
 from .audience import record_allowed
 from .citation import CitationRecord, RelationIndex, citation_for, passes_default_policy, pick_representation
@@ -23,7 +23,8 @@ from .diagnostics import Diagnostic, Diagnostics
 from .digest import utf8
 from .reading_order import ReadingOrder, passes_up_to
 from .state import refresh_record, state_index
-from .terms import UNSET, gate_reasons, rating_of, record_terms, resolve_ai, resolve_export
+from .terms import UNSET, gate_reasons, record_terms, resolve_export
+from .terms_gate import TermsCount, TermsResolver, library_resolver, state_resolver
 
 if TYPE_CHECKING:
     from .library import Library
@@ -111,8 +112,10 @@ class _Context:
     # Package spec §5.6: what each loaded composing package binds its members to.
     composition: CompositionIndex
     findings: Diagnostics
-    # Contract §15.4: the terms gate's removals by reason, in the latest round; None without a terms request.
-    terms_excluded: dict[str, int] | None = None
+    # Contract §15.3-15.4: each node's resolved terms, and which packages are closed or hidden for the request.
+    resolver: TermsResolver | None = None
+    # Contract §15.4: the terms gate's removals, in the latest round; None without a terms request.
+    terms_excluded: TermsCount | None = None
 
 
 class Search:
@@ -213,11 +216,10 @@ class Search:
             size = size * 2 if self.max_candidates is None else min(size * 2, self.max_candidates)
 
     def _finish(self, passed: list[CitationRecord], ctx: _Context) -> list[CitationRecord]:
-        """The records the caller keeps, and the terms gate's count by reason (U004, contract §15.4)."""
+        """The records the caller keeps, and the terms gate's counts (U004, contract §15.4): by reason, and how many
+        came from packages hidden for the request."""
         kept = passed[: ctx.caller["limit"]]
-        if ctx.terms_excluded:
-            counts = ", ".join(f"{k}: {n}" for k, n in js_sorted(ctx.terms_excluded.items(), key=lambda kv: kv[0]))
-            ctx.findings.add("U004_TERMS_EXCLUDED", f"the terms request removed records ({counts})")
+        if ctx.terms_excluded is not None and ctx.terms_excluded.report(ctx.findings, "records"):
             self.diagnostics = ctx.findings.items
         return kept
 
@@ -272,7 +274,15 @@ class Search:
             if self.library
             else [(s.get("digest"), s.get("composition")) for s in (self.states or {}).values() if isinstance(s, dict)]
         )
-        return _Context(now, index, request, caller, loaded, hook_context, composition, findings)  # type: ignore[arg-type]
+        terms_request = caller["terms"]
+        resolver = (
+            None
+            if terms_request is None
+            else library_resolver(self.library, self.terms_limits, terms_request)
+            if self.library
+            else state_resolver(self.states or {}, composition, self.allow_unsigned, self.terms_limits, terms_request)
+        )
+        return _Context(now, index, request, caller, loaded, hook_context, composition, findings, resolver)  # type: ignore[arg-type]
 
     def _plan(self, ctx: _Context) -> tuple[int, dict[str, Any]]:
         request = ctx.request
@@ -426,7 +436,7 @@ class Search:
         caller keeps the limit."""
         request = ctx.caller
         # Counted afresh each round: the last round's count is the one reported.
-        ctx.terms_excluded = {} if request.get("terms") is not None else None
+        ctx.terms_excluded = TermsCount() if request.get("terms") is not None else None
         concepts = self._concepts(request)
         wanted = frozenset(concepts) if concepts else None
         late: dict[str, tuple[ReadingOrder, frozenset[str]] | None] = {}
@@ -472,43 +482,21 @@ class Search:
 
     def _terms(self, record: CitationRecord, request: Any, ctx: _Context) -> CitationRecord | None:
         """Contract §15.3-15.4: the record with its resolved terms, or None when the terms gate removes it (counted
-        by reason). A package with no terms result (its manifest failed its schema) has every field at its
-        strictest."""
-
-        from .reader import terms_source_of
-
-        def source_of(digest: Any) -> Any:
-            if self.library:
-                return terms_source_of(ctx.loaded.get(digest))
-            state = (self.states or {}).get(digest)
-            return state.get("terms") if isinstance(state, dict) else None
-
-        package = record["package"]
-        source = source_of(package.get("digest"))
-        # Contract §15.3 step 3: a composing package's terms apply only when its signers speak for the member, as for
-        # upTo (§9), or the host allows unsigned packages to. A composer with no terms result counts as setting
-        # nothing.
-        composites: list[Any] = []
-        for composer in ctx.composition.composers_of(package.get("digest")):
-            if not self.allow_unsigned and not scope_covers(
-                self._relation_scopes(composer.digest, ctx.loaded), package.get("id")
-            ):
-                continue
-            c = source_of(composer.digest)
-            if isinstance(c, dict) and truthy(c.get("terms")):
-                composites.append(c["terms"])
-        pkg = source if isinstance(source, dict) else _STRICTEST_SOURCE
+        by reason, and as hidden when its package is hidden for the request). A package with no terms result (its
+        manifest failed its schema) has every field at its strictest. A record that passes names no hidden package
+        in supersededBy or contestedBy (§15.4, "Nothing names a hidden package")."""
+        assert ctx.resolver is not None and ctx.terms_excluded is not None
+        digest = record["package"].get("digest")
         path = record["node"].get("path")
-        path = path if isinstance(path, str) else ""
-        ai = resolve_ai(pkg, path, self.terms_limits, composites)
-        rating = rating_of(pkg.get("terms"), path)
-        reasons = gate_reasons(request if isinstance(request, dict) else {}, ai, rating)
+        found = ctx.resolver.node_terms(digest, path if isinstance(path, str) else "")
+        reasons = gate_reasons(request if isinstance(request, dict) else {}, found.ai, found.rating)
         if reasons:
-            assert ctx.terms_excluded is not None
-            for r in reasons:
-                ctx.terms_excluded[r] = ctx.terms_excluded.get(r, 0) + 1
+            ctx.terms_excluded.add(reasons, ctx.resolver.closure(digest)["hidden"])
             return None
-        return {**record, "terms": record_terms(pkg.get("authority"), ai, rating, resolve_export(pkg, composites))}
+        terms = record_terms(
+            found.pkg.get("authority"), found.ai, found.rating, resolve_export(found.pkg, found.composites)
+        )
+        return ctx.resolver.without_hidden({**record, "terms": terms})
 
     def _passes_up_to(
         self,
@@ -565,25 +553,6 @@ class Search:
             return have == want or want.startswith(f"{have}-") or have.startswith(f"{want}-")
         rep = pick_representation(node, locale)
         return bool((rep.locale or result.manifest.get("language")) == record["node"].get("locale"))
-
-
-# A package with no terms result: every field at its strictest (contract §15.3).
-_STRICTEST_SOURCE: dict[str, Any] = {
-    "terms": {
-        "ai": {
-            "allowed": {
-                "device": False,
-                "host": False,
-                "provider": False,
-                "training": False,
-                "machineTranslation": False,
-            },
-            "answerSources": "work",
-        },
-        "rights": {"export": {"allowed": False}},
-    },
-    "authority": "unverified",
-}
 
 
 def _key_part(value: Any) -> str:

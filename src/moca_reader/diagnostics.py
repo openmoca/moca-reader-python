@@ -14,6 +14,9 @@ class Diagnostic:
     message: str
     file: str | None = None
     line: int | None = None
+    # Contract §15.4: U004 carries its counts, records removed by reason and how many came from hidden packages.
+    excluded: dict[str, int] | None = None
+    hidden: int | None = None
 
     def to_json(self) -> dict[str, object]:
         out: dict[str, object] = {"code": self.code, "severity": self.severity, "message": self.message}
@@ -21,6 +24,10 @@ class Diagnostic:
             out["file"] = self.file
         if self.line is not None:
             out["line"] = self.line
+        if self.excluded is not None:
+            out["excluded"] = dict(self.excluded)
+        if self.hidden is not None:
+            out["hidden"] = self.hidden
         return out
 
 

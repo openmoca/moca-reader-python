@@ -13,6 +13,7 @@ from moca_reader import LexicalBackend, Library, Search, SearchHooks, read_packa
 from moca_reader.terms import (
     UNSET,
     check_terms,
+    closure_of,
     gate_reasons,
     loosened_nodes,
     node_entry,
@@ -135,6 +136,70 @@ def test_malformed_and_unknown_values_count_as_the_strictest() -> None:
         everyone = resolve_ai(pkg({"nodes": nodes}), "b.md")
         assert everyone["allowed.device"] == {"value": False, "decidedBy": "node"}
         assert everyone["answerSources"]["value"] == "work"
+
+
+def test_mention_resolves_like_every_allowed_field() -> None:
+    # Contract §15.3 (ADR-0041): platform default true; the stricter value applies whatever its authority.
+    assert resolve_ai(pkg({}), "a.md")["allowed.mention"] == {"value": True, "decidedBy": "platform"}
+    hidden = resolve_ai(pkg({"ai": {"allowed": {"mention": False}}}), "a.md")
+    assert hidden["allowed.mention"] == {"value": False, "decidedBy": "package"}
+    assert resolve_ai(pkg({}), None, {"allowed": {"mention": False}})["allowed.mention"]["decidedBy"] == "host"
+    composite = {"ai": {"allowed": {"mention": False}}}
+    assert resolve_ai(pkg({}), None, UNSET, [composite])["allowed.mention"]["decidedBy"] == "composite"
+    # Nothing loosens it: a host's true does not undo a package's false.
+    assert resolve_ai(pkg({"ai": {"allowed": {"mention": False}}}), None, {"allowed": {"mention": True}})[
+        "allowed.mention"
+    ] == {"value": False, "decidedBy": "package"}
+    # Malformed fails closed: a value that is not a boolean, or a malformed container.
+    assert resolve_ai(pkg({"ai": {"allowed": {"mention": "no"}}}), None)["allowed.mention"]["value"] is False
+    for ai in ({"allowed": False}, "none"):
+        assert resolve_ai(pkg({"ai": ai}), None)["allowed.mention"]["value"] is False
+
+
+def test_mention_is_package_level_only() -> None:
+    # In a nodes entry it is U003, has no effect, and is never reported as loosened.
+    terms = {
+        "ai": {"allowed": {"mention": False}},
+        "nodes": [{"paths": ["content/a.md"], "ai": {"allowed": {"mention": True}}}],
+    }
+    assert problems(terms) == {"U003_TERMS_UNKNOWN_VALUE nodes.0.ai.allowed.mention"}
+    assert loosened_nodes(terms) == []
+    assert resolve_ai(pkg(terms), "a.md")["allowed.mention"] == {"value": False, "decidedBy": "package"}
+    node_only = {"nodes": [{"paths": ["content/a.md"], "ai": {"allowed": {"mention": False}}}]}
+    assert resolve_ai(pkg(node_only), "a.md")["allowed.mention"]["value"] is True
+    # A malformed nodes entry makes every node's other fields the strictest, never mention.
+    assert resolve_ai(pkg({"nodes": {}}), "a.md")["allowed.mention"]["value"] is True
+
+
+def test_closed_and_hidden() -> None:
+    # Contract §15.4: from the package-level resolved terms; a use never closes a package.
+    def closure(terms: Any, request: Any, limits: Any = UNSET) -> dict[str, Any]:
+        return closure_of(request, resolve_ai(pkg(terms), None, limits))
+
+    provider = {"ai": {"destination": "provider"}}
+    assert closure({}, provider) == {"closed": False, "closedBy": [], "hidden": False}
+    assert closure({}, {}) == {"closed": False, "closedBy": [], "hidden": False}
+    closed = {"ai": {"allowed": {"provider": False}}}
+    assert closure(closed, provider) == {"closed": True, "closedBy": ["ai.allowed.provider"], "hidden": False}
+    assert closure(closed, {"ai": {"destination": "host"}})["closed"] is False
+    # An unknown or missing destination is provider.
+    assert closure(closed, {"ai": {"destination": "elsewhere"}})["closedBy"] == ["ai.allowed.provider"]
+    assert closure(closed, {"ai": {}})["closed"] is True
+    hidden = {"ai": {"allowed": {"provider": False, "mention": False}}}
+    assert closure(hidden, provider) == {"closed": True, "closedBy": ["ai.allowed.provider"], "hidden": True}
+    # mention changes nothing while the destination is allowed.
+    assert closure({"ai": {"allowed": {"mention": False}}}, provider)["hidden"] is False
+    conditions = {"ai": {"providerRequires": ["noTraining"]}}
+    assert closure(conditions, provider)["closedBy"] == ["ai.providerRequires"]
+    assert closure(conditions, {"ai": {"destination": "provider", "conditions": ["noTraining"]}})["closed"] is False
+    for use in ("train", "translate"):
+        assert closure({}, {"ai": {"destination": "provider", "use": use}})["closed"] is False
+    # A malformed container closes the package for every destination and hides it.
+    for d in ("device", "host", "provider"):
+        assert closure({"ai": {"allowed": False}}, {"ai": {"destination": d}})["hidden"] is True
+    # A host limit of false hides every closed package, and only those.
+    assert closure(closed, provider, {"allowed": {"mention": False}})["hidden"] is True
+    assert closure({}, provider, {"allowed": {"mention": False}})["hidden"] is False
 
 
 def test_export_resolves_from_package_and_composites() -> None:
@@ -282,6 +347,49 @@ def test_the_terms_gate_in_a_search(tmp_path: Path) -> None:
     assert floored.search("refunds", limit=10, terms={"ai": {"destination": "provider"}}) == []
 
 
+def _versions(tmp_path: Path, mention: bool) -> Library:
+    """Version 2 supersedes version 1 and is closed for a provider; hidden too unless ``mention``."""
+    ai: dict[str, Any] = {"allowed": {"provider": False, **({} if mention else {"mention": False})}}
+    v1 = read_package(package(tmp_path / "v1", {"title": "One"}, {"content/a.md": NODE.format(title="A")}))
+    v2_manifest = {
+        "version": "2.0.0",
+        "title": "Two",
+        "terms": {"ai": ai},
+        "relations": [{"type": "supersedes", "target": "https://example.com/t", "version": "1.0.0"}],
+    }
+    v2 = read_package(package(tmp_path / "v2", v2_manifest, {"content/a.md": NODE.format(title="A")}))
+    return Library(clock=lambda: NOW, allow_unsigned_relations=True).add(v1).add(v2)
+
+
+def test_u004_counts_records_by_reason_and_those_from_hidden_packages(tmp_path: Path) -> None:
+    library = _versions(tmp_path, mention=False)
+    search = Search(library, LexicalBackend(library))
+    records = search.search("refunds", limit=10, include_all=True, terms={"ai": {"destination": "provider"}})
+    assert [r["package"]["version"] for r in records] == ["1.0.0"]
+    [u004] = search.diagnostics
+    assert (u004.code, u004.excluded, u004.hidden) == ("U004_TERMS_EXCLUDED", {"ai.allowed.provider": 1}, 1)
+    assert u004.to_json()["excluded"] == {"ai.allowed.provider": 1} and u004.to_json()["hidden"] == 1
+    # A closed package that may be mentioned is not hidden.
+    named = _versions(tmp_path / "named", mention=True)
+    search = Search(named, LexicalBackend(named))
+    search.search("refunds", limit=10, include_all=True, terms={"ai": {"destination": "provider"}})
+    assert search.diagnostics[0].hidden == 0
+
+
+def test_superseded_by_names_no_hidden_package(tmp_path: Path) -> None:
+    request = {"ai": {"destination": "provider"}}
+    for mention, named in ((False, None), (True, ["https://example.com/t@2.0.0"])):
+        library = _versions(tmp_path / str(mention), mention)
+        [v1] = Search(library, LexicalBackend(library)).search("refunds", limit=10, include_all=True, terms=request)
+        assert v1["trust"]["superseded"] is True
+        assert v1["trust"].get("supersededBy") == named
+        # Without a terms request nothing is left out.
+        plain = Search(library, LexicalBackend(library)).search("refunds", limit=10, include_all=True)
+        assert next(r for r in plain if r["package"]["version"] == "1.0.0")["trust"]["supersededBy"] == [
+            "https://example.com/t@2.0.0"
+        ]
+
+
 def test_de_duplication_keeps_spans_that_differ_only_in_their_end(tmp_path: Path) -> None:
     result = read_package(package(tmp_path / "p", {"title": "T"}, {"content/a.md": NODE.format(title="A")}))
     library = Library(clock=lambda: NOW).add(result)
@@ -308,3 +416,19 @@ def test_terms_request_for_an_app_that_hands_records_to_a_model() -> None:
     assert terms_request(terms=own) == own
     with pytest.raises(ValueError, match="destination"):
         terms_request("moon")
+    # A binding never hands content on without an ai part: an ai that is not an object is refused.
+    for dropped in (None, False, [], "none"):
+        with pytest.raises(ValueError, match="must be an object"):
+            terms_request(terms={"ai": dropped})
+
+
+def test_library_search_takes_a_terms_request_and_limits(tmp_path: Path) -> None:
+    terms = {"ai": {"allowed": {"provider": False}}}
+    result = read_package(
+        package(tmp_path / "p", {"title": "T", "terms": terms}, {"content/a.md": NODE.format(title="A")})
+    )
+    library = Library(clock=lambda: NOW).add(result)
+    assert len(library.search("refunds")) == 1
+    assert library.search("refunds", terms=terms_request()) == []
+    assert len(library.search("refunds", terms=terms_request("host"))) == 1
+    assert library.search("refunds", terms=terms_request("host"), terms_limits={"allowed": {"host": False}}) == []

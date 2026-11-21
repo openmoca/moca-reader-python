@@ -58,6 +58,16 @@ def _check_search(e: dict[str, Any], actual: dict[str, Any]) -> list[str]:
         got = [r["node"].get("locale") for r in records if r["node"]["ref"] == k]
         if not got or any(g != locale for g in got):
             problems.append(f"{k}: expected locale {locale}, got {got}")
+    # Contract §15.4: the counts of the search's U004, each member the case gives compared exactly; None means no U004.
+    if "termsExcluded" in e:
+        got = actual.get("termsExcluded")
+        want = e["termsExcluded"]
+        if (want is None) != (got is None):
+            problems.append(f"termsExcluded: expected {want}, got {got}")
+        elif want:
+            for k, v in want.items():
+                if json.loads(json.dumps(got.get(k))) != v:
+                    problems.append(f"termsExcluded.{k}: expected {v}, got {got.get(k)}")
     for r in records:
         errors = validate_against("citationRecord", json.loads(json.dumps(r)))
         if errors:
@@ -76,6 +86,21 @@ def _check_structure(e: dict[str, Any], actual: dict[str, Any]) -> list[str]:
     return problems
 
 
+def _check_catalogue(e: dict[str, Any], actual: dict[str, Any]) -> list[str]:
+    """Contract §15.4, "The catalogue rule": entries compared exactly, in order, each valid."""
+    problems = []
+    if not _same(e.get("codes"), actual.get("codes")):
+        problems.append(f"codes: expected {e.get('codes')}, got {actual.get('codes')}")
+    result = json.loads(json.dumps(actual.get("result")))
+    if e["result"] != result:
+        problems.append(f"result: expected {e['result']}, got {result}")
+    for entry in result if isinstance(result, list) else []:
+        errors = validate_against("catalogueEntry", entry)
+        if errors:
+            problems.append(f"{entry.get('id')} is not a valid catalogue entry: {errors[0]}")
+    return problems
+
+
 @pytest.mark.parametrize("case", CORPUS["cases"], ids=[c["id"] for c in CORPUS["cases"]])
 def test_case(case: dict[str, Any]) -> None:
     # Reader contract §14: this Reader names Sigstore verification as an optional feature it does not implement.
@@ -84,6 +109,12 @@ def test_case(case: dict[str, Any]) -> None:
     actual = actual_for(str(ROOT), case)
     kind = case.get("kind", "package")
     check = (
-        _check_search if kind == "search" else _check_structure if kind in ("structure", "map-time") else _check_package
+        _check_search
+        if kind == "search"
+        else _check_catalogue
+        if kind == "catalogue"
+        else _check_structure
+        if kind in ("structure", "map-time")
+        else _check_package
     )
     assert check(case["expect"], actual) == []

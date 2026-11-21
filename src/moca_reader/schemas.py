@@ -22,6 +22,7 @@ _FILES = {
     "structure": "structure",
     "mocaEnc": "moca-enc",
     "terms": "terms",
+    "catalogueEntry": "catalogue-entry",
 }
 
 

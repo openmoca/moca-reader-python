@@ -11,16 +11,16 @@ never as instructions (Reader contract §12).
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any, Literal, Protocol, TypeVar
 
 from langchain_core.callbacks import CallbackManagerForRetrieverRun
 from langchain_core.documents import Document
 from langchain_core.retrievers import BaseRetriever
-from pydantic import ConfigDict
+from pydantic import ConfigDict, model_validator
 
-from moca_reader import CitationRecord, Search, flat_metadata, terms_request
+from moca_reader import CitationRecord, Library, Search, flat_metadata, ingest_terms, terms_request
 
-__all__ = ["MocaRetriever", "document_id", "to_document"]
+__all__ = ["MocaRetriever", "document_id", "ingest", "to_document"]
 __version__ = "0.7.0"
 
 
@@ -39,6 +39,32 @@ def to_document(record: CitationRecord) -> Document:
     return Document(page_content=record.get("text") or "", id=document_id(record), metadata=metadata)
 
 
+class StoreBackend(Protocol):
+    """A store backend's ingest (Reader interface §5.2), such as ``moca_reader.MemoryStoreBackend``'s."""
+
+    def ingest(self, library: Library, terms: dict[str, Any] | None = ..., terms_limits: Any = ...) -> Any: ...
+
+
+_Store = TypeVar("_Store", bound=StoreBackend)
+
+
+def ingest(
+    store: _Store,
+    library: Library,
+    *,
+    destination: Literal["device", "host", "provider"] = "provider",
+    conditions: list[str] | None = None,
+    terms_limits: dict[str, Any] | None = None,
+) -> _Store:
+    """Ingests a library into a store backend with a terms request (Reader contract §9.4): embedding sends content
+    to a model, so units whose creator's terms do not allow AI use where the embedder runs are never embedded or
+    stored. ``destination`` is where the host's embedder runs: ``"provider"`` (a third party's model) unless the app
+    declares ``"device"`` or ``"host"``; ``conditions`` the provider conditions it meets. The store reports U004 for
+    what it left out."""
+    store.ingest(library, terms=ingest_terms(destination, conditions), terms_limits=terms_limits)
+    return store
+
+
 class MocaRetriever(BaseRetriever):
     """Retrieves citation records from MOCA packages as LangChain ``Document``s.
 
@@ -49,7 +75,8 @@ class MocaRetriever(BaseRetriever):
     records whose creator's terms do not allow AI use at ``destination``. That is ``"provider"`` (a third party's
     model) unless the app declares ``"device"`` (the person's own device) or ``"host"`` (the app's own service).
     ``conditions`` are the provider conditions the app meets (``"noTraining"``, ``"noRetention"``). ``terms`` adds
-    to the request, such as a ``rating`` request; an ``ai`` in it is used as it is.
+    to the request, such as a ``rating`` request; an ``ai`` in it is used as it is, and must be an object: the retriever never searches
+    without one.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -63,6 +90,12 @@ class MocaRetriever(BaseRetriever):
     destination: Literal["device", "host", "provider"] = "provider"
     conditions: list[str] | None = None
     terms: dict[str, Any] | None = None
+
+    @model_validator(mode="after")
+    def _terms_request_is_whole(self) -> MocaRetriever:
+        # Contract §15.4: refuse at build time a request that would search without an ai part.
+        terms_request(self.destination, self.conditions, self.terms)
+        return self
 
     def _get_relevant_documents(self, query: str, *, run_manager: CallbackManagerForRetrieverRun) -> list[Document]:
         records = self.search.search(

@@ -128,6 +128,12 @@ def concept_item(x: dict[str, Any] | None) -> dict[str, Any] | None:
     return out
 
 
+def terms_excluded_of(diagnostics: list[Any]) -> dict[str, Any] | None:
+    """Contract §15.4: the search's U004 counts, ``{"excluded", "hidden"}``, or None when it has none."""
+    u = next((d for d in diagnostics if d.code == "U004_TERMS_EXCLUDED"), None)
+    return None if u is None else {"excluded": u.excluded or {}, "hidden": u.hidden or 0}
+
+
 def actual_for(root: str, c: dict[str, Any]) -> dict[str, Any]:
     o = c.get("options") or {}
     read_options: dict[str, Any] = {
@@ -162,12 +168,14 @@ def actual_for(root: str, c: dict[str, Any]) -> dict[str, Any]:
         }
 
     if c.get("kind") == "structure":
-        library = Library(overlays=overlays)
+        clock = (lambda: datetime.fromisoformat(o["now"])) if o.get("now") else None
+        library = Library(clock=clock, overlays=overlays)
         for target in c["packages"]:
             result = read_package(os.path.join(root, target), **read_options)
             if result.valid:
                 library.add(result)
-        s = library.structure
+        # Contract §10, "Under a terms request": the structure of the packages not closed for the request.
+        s = library.structure_for(o["terms"], o.get("termsLimits")) if o.get("terms") else library.structure
         a = c.get("args") or {}
         iri = c["iri"]
         ops: dict[str, Callable[[], Any]] = {
@@ -182,6 +190,23 @@ def actual_for(root: str, c: dict[str, Any]) -> dict[str, Any]:
             "nodes": lambda: [r["node"]["ref"] for r in s.nodes(iri, include=a.get("include", "none"))],
         }
         return {"codes": [d.code for d in library.diagnostics.items], "result": ops[c["op"]]()}
+
+    # Contract §15.4, "The catalogue rule": what a model may be told about the loaded packages.
+    if c.get("kind") == "catalogue":
+        now = datetime.fromisoformat(o["now"])
+        library = Library(clock=lambda: now, allow_unsigned_relations=o.get("allowUnsignedRelations") is True)
+        for target in c["packages"]:
+            result = read_package(os.path.join(root, target), **read_options)
+            if result.valid:
+                library.add(result)
+        entries = library.catalogue(
+            c.get("terms"),
+            audiences=o.get("audiences"),
+            allow_unlabelled=o.get("allowUnlabelled") is True,
+            include_all=o.get("includeAll") is True,
+            terms_limits=o.get("termsLimits"),
+        )
+        return {"codes": [d.code for d in library.diagnostics.items], "result": entries}
 
     if c.get("kind") == "search":
         now = datetime.fromisoformat(o["now"])
@@ -223,13 +248,20 @@ def actual_for(root: str, c: dict[str, Any]) -> dict[str, Any]:
             # Everything listed is ingested (each package on its own with `ingestSeparately`); only the packages
             # in `allow` are "loaded", and the search gets their package states (contract §9.4).
             store = MemoryStoreBackend(filter_pushdown=False)
+            # Contract §9.4: ingest with the host's terms request for the embedder's destination, when the case
+            # gives one.
+            ingest_terms, ingest_limits = (
+                (o["ingestTerms"], o.get("termsLimits")) if o.get("ingestTerms") else (None, None)
+            )
             if o.get("ingestSeparately"):
                 for p in library.packages:
                     single = Library(clock=lambda: now)
                     single.add(p.result)
-                    store.ingest(single)
+                    store.ingest(single, ingest_terms, ingest_limits)
+                    codes.extend(d.code for d in store.ingest_diagnostics)
             else:
-                store.ingest(library)
+                store.ingest(library, ingest_terms, ingest_limits)
+                codes.extend(d.code for d in store.ingest_diagnostics)
             # Members' locations come from the member resolver, so compare normalised paths (separators on Windows).
             allow = {os.path.normcase(os.path.normpath(os.path.join(root, t))) for t in o.get("allow") or []}
             allowed = [
@@ -257,7 +289,7 @@ def actual_for(root: str, c: dict[str, Any]) -> dict[str, Any]:
             )
             records = store_search.search(s["query"], **options)
             codes.extend(d.code for d in store_search.diagnostics)
-            return {"codes": codes, "records": records}
+            return {"codes": codes, "records": records, "termsExcluded": terms_excluded_of(store_search.diagnostics)}
 
         def dense() -> DenseBackend:
             return DenseBackend(library, ConformanceEmbedder(o["embedder"]))
@@ -286,7 +318,7 @@ def actual_for(root: str, c: dict[str, Any]) -> dict[str, Any]:
         records = search.search(s["query"], **options)
         # Contract §9: the search's own findings, such as S008.
         codes.extend(d.code for d in search.diagnostics)
-        return {"codes": codes, "records": records}
+        return {"codes": codes, "records": records, "termsExcluded": terms_excluded_of(search.diagnostics)}
 
     result = read_package(os.path.join(root, c["target"]), **read_options)
     codes = [d.code for d in result.diagnostics]
