@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
@@ -14,6 +15,7 @@ from moca_reader import Library, bind_sidecar, read_package
 from moca_reader._js import MAX_NESTING, json_loads, parse_date
 from moca_reader.evidence_text import html_text
 from moca_reader.frontmatter import split_frontmatter
+from moca_reader.source import directory_source
 
 NODE = "---\ntype: Note\ntitle: A\n---\n\n# A\n\nText.\n"
 MANIFEST = {"id": "https://example.com/m", "version": "1.0.0", "title": "M"}
@@ -122,3 +124,24 @@ def test_a_sidecar_with_an_unreadable_entry_is_s001(tmp_path: Path) -> None:
     assert not bound.usable
     assert [d.code for d in bound.diagnostics] == ["S001_SIDECAR_INVALID"]
     assert "could not be read" in bound.diagnostics[0].message
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink") or os.name == "nt", reason="needs POSIX symbolic links")
+def test_a_directory_source_never_follows_a_link_swapped_in_after_listing(tmp_path: Path) -> None:
+    root = Path(package(tmp_path / "p", {"moca.json": json.dumps(MANIFEST), "content/a.md": NODE}))
+    elsewhere = Path(package(tmp_path / "elsewhere", {"a.md": "host file"}))
+    source = directory_source(root)
+    assert [e.path for e in source.list()] == ["content/a.md", "moca.json"]
+    assert source.read("content/a.md") == NODE.encode()
+    # The parent directory is replaced by a link after listing.
+    (root / "content" / "a.md").unlink()
+    (root / "content").rmdir()
+    (root / "content").symlink_to(elsewhere, target_is_directory=True)
+    with pytest.raises(OSError):
+        source.read("content/a.md")
+    # And the file itself.
+    (root / "content").unlink()
+    (root / "content").mkdir()
+    (root / "content" / "a.md").symlink_to(elsewhere / "a.md")
+    with pytest.raises(OSError):
+        source.read("content/a.md")

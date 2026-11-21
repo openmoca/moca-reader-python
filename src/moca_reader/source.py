@@ -143,17 +143,66 @@ def directory_source(root: str | os.PathLike[str], limits: dict[str, int] | None
         return out
 
     def read(path: str) -> bytes:
-        file = Path(root_dir, *path.split("/"))
-        # Never follow a link swapped in after listing.
-        if not stat.S_ISREG(os.lstat(file).st_mode):
-            raise OSError(f"{path} is no longer a regular file")
-        data = file.read_bytes()
+        # Contract §3: never follow a link, including one swapped in after listing, at any step of the path. At
+        # most one byte past the limit is read.
+        data = _read_no_follow(root_dir, path.split("/"), lim["maxBytes"] - read_bytes[0] + 1)
         read_bytes[0] += len(data)
         if read_bytes[0] > lim["maxBytes"]:
             raise TargetError("T003_ARCHIVE_REJECTED", f"directory exceeds the {lim['maxBytes']}-byte limit")
         return data
 
     return PackageSource("directory", walk, read, root_dir)
+
+
+_NO_FOLLOW = os.open in os.supports_dir_fd and hasattr(os, "O_NOFOLLOW") and hasattr(os, "O_DIRECTORY")
+
+
+def _read_no_follow(root: str, parts: list[str], most: int) -> bytes:
+    """The bytes of a regular file under root, opening each directory and the file itself relative to the one
+    before, without following a symbolic link, and checking what was opened, not the path. ``root`` is the host's.
+    Where the platform cannot open relative to a directory, each step is checked with lstat before reading."""
+    if not _NO_FOLLOW:
+        here = root
+        for part in parts:
+            here = os.path.join(here, part)
+            if stat.S_ISLNK(os.lstat(here).st_mode):
+                raise OSError(f"{'/'.join(parts)} has a symbolic link in its path")
+        if not stat.S_ISREG(os.lstat(here).st_mode):
+            raise OSError(f"{'/'.join(parts)} is no longer a regular file")
+        with open(here, "rb") as f:
+            return _read_bounded(f, os.fstat(f.fileno()).st_size, most)
+    directory = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for part in parts[:-1]:
+            inner = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+            os.close(directory)
+            directory = inner
+        # O_NONBLOCK: a pipe swapped in is refused below, not waited on.
+        fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0), dir_fd=directory)
+    finally:
+        os.close(directory)
+    with os.fdopen(fd, "rb") as f:
+        st = os.fstat(f.fileno())
+        if not stat.S_ISREG(st.st_mode):
+            raise OSError(f"{'/'.join(parts)} is no longer a regular file")
+        return _read_bounded(f, st.st_size, most)
+
+
+def _read_bounded(f: Any, size: int, most: int) -> bytes:
+    """At most ``most`` bytes of a file of ``size`` bytes. A read of n bytes sets aside n bytes first, so the file's
+    own size is asked for (and one more, to see it grew), and a file that grew is read on in bounded chunks."""
+    data = f.read(min(most, size + 1))
+    if len(data) <= size:
+        return bytes(data)
+    chunks = [data]
+    total = len(data)
+    while total < most:
+        chunk = f.read(min(1 << 20, most - total))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        total += len(chunk)
+    return b"".join(chunks)
 
 
 def _assert_safe_archive_path(name: str) -> None:
