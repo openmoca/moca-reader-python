@@ -197,7 +197,20 @@ def read_package(
         decryptor,
     )
     # Contract §3: one budget per read. Each member pin is read once and shared, so repeats cost nothing more.
-    return _read(target, options, [], _ReadBudget())
+    try:
+        return _read(target, options, [], _ReadBudget())
+    except Exception as err:
+        # Contract §3: never raise for a malformed package. An error no check foresaw ends the read with one P002.
+        result = PackageResult()
+        diagnostics = Diagnostics(options.strict, result.diagnostics)
+        diagnostics.add("P002_UNREADABLE_ENTRY", f"the package could not be read: {_unexpected(err)}")
+        return result
+
+
+def _unexpected(err: Exception) -> str:
+    """An unexpected error, named for a diagnostic: its type, and its message when it has one."""
+    name = type(err).__name__
+    return f"{name}: {err}" if str(err) else name
 
 
 @dataclass
@@ -652,7 +665,18 @@ def _resolve_members(
                 continue
             budget.resolved += 1
             target = options.resolve_member({"id": entry.id, "version": entry.version, "digest": entry.digest})
-            child = _read(target, options, [*stack, own_key], budget) if target else None
+            try:
+                child = _read(target, options, [*stack, own_key], budget) if target else None
+            except Exception as err:
+                # Contract §3: an error no check foresaw in one member leaves that member unresolved, with one
+                # R001, and the rest of the read goes on.
+                budget.members[pin] = None
+                diagnostics.add(
+                    "R001_MEMBER_UNRESOLVED",
+                    f"member {entry.id}@{entry.version} could not be read: {_unexpected(err)}",
+                    MANIFEST,
+                )
+                continue
             budget.members[pin] = child
         if child is None:
             diagnostics.add(

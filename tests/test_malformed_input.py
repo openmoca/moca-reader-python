@@ -5,17 +5,22 @@ from __future__ import annotations
 import io
 import json
 import os
+import sys
 import zipfile
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
 from moca_reader import Library, bind_sidecar, read_package
-from moca_reader._js import MAX_NESTING, json_loads, parse_date
+from moca_reader import reader as reader_module
+from moca_reader._js import MAX_NESTING, json_loads, json_nesting_scan, parse_date
+from moca_reader.diagnostics import Diagnostics
 from moca_reader.evidence_text import html_text
 from moca_reader.frontmatter import split_frontmatter
-from moca_reader.source import _read_checking_each_step, directory_source
+from moca_reader.source import DEFAULT_LIMITS, _read_checking_each_step, directory_source
+from moca_reader.structure import parse_structure
 
 NODE = "---\ntype: Note\ntitle: A\n---\n\n# A\n\nText.\n"
 MANIFEST = {"id": "https://example.com/m", "version": "1.0.0", "title": "M"}
@@ -69,6 +74,64 @@ def test_deep_frontmatter_is_c002(tmp_path: Path) -> None:
     assert "C002_FRONTMATTER_INVALID" in codes(
         package(tmp_path / "p", {"moca.json": json.dumps(MANIFEST), "content/a.md": node})
     )
+
+
+# A double-quoted escape past U+10FFFF: the YAML library raises a plain ValueError, not a YAML error.
+ESCAPE_PAST_UNICODE = '---\ntype: Note\ntitle: "\\U00110000"\n---\n\nText.\n'
+
+
+def test_every_frontmatter_parser_error_is_c002(tmp_path: Path) -> None:
+    split = split_frontmatter(ESCAPE_PAST_UNICODE)
+    assert split.present and split.error is not None
+    files = {"moca.json": json.dumps(MANIFEST), "content/a.md": ESCAPE_PAST_UNICODE, "content/b.md": NODE}
+    result = read_package(package(tmp_path / "p", files))
+    assert [d.code for d in result.diagnostics] == ["C002_FRONTMATTER_INVALID"]
+    assert not result.valid
+
+
+def test_an_unexpected_error_in_a_member_is_one_r001(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def failing(manifest: object, *args: object) -> None:
+        if isinstance(manifest, dict) and manifest.get("id") == "https://example.com/member":
+            raise RuntimeError("forced")
+        check_manifest(manifest, *args)  # type: ignore[arg-type]
+
+    check_manifest = reader_module.check_manifest
+    monkeypatch.setattr(reader_module, "check_manifest", failing)
+    member = package(
+        tmp_path / "member",
+        {"moca.json": json.dumps({**MANIFEST, "id": "https://example.com/member"}), "content/a.md": NODE},
+    )
+    pin = {"id": "https://example.com/member", "version": "1.0.0", "digest": "sha256:" + "0" * 64}
+    composite = package(tmp_path / "c", {"moca.json": json.dumps({**MANIFEST, "members": [pin]}), "content/a.md": NODE})
+    result = read_package(composite, resolve_member=lambda m: member)
+    r001 = [d for d in result.diagnostics if d.code == "R001_MEMBER_UNRESOLVED"]
+    assert len(r001) == 1 and "RuntimeError: forced" in r001[0].message
+    assert result.members[0].result is None
+
+
+def test_an_unexpected_error_in_the_read_is_one_diagnostic(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def failing(*args: object) -> None:
+        raise RuntimeError("forced")
+
+    monkeypatch.setattr(reader_module, "check_manifest", failing)
+    result = read_package(package(tmp_path / "p", {"moca.json": json.dumps(MANIFEST), "content/a.md": NODE}))
+    assert [d.code for d in result.diagnostics] == ["P002_UNREADABLE_ENTRY"]
+    assert "RuntimeError: forced" in result.diagnostics[0].message
+    assert not result.valid
+
+
+def test_the_json_nesting_check_is_one_pass() -> None:
+    # Counted in steps, not by the clock: at most one step per character, whatever the text.
+    mib = 1 << 20
+    for text in ('"' + "a" * mib, '["' + '\\"' * (mib // 2), '"' * mib, "[" * 64 + '"' + "[" * mib):
+        exceeds, steps = json_nesting_scan(text)
+        assert not exceeds
+        assert steps <= len(text)
+    exceeds, steps = json_nesting_scan("[" * mib)
+    assert exceeds and steps == MAX_NESTING + 1
+    # Brackets after an escaped quote are still inside the string.
+    assert not json_nesting_scan('["\\"' + "[" * 100 + '"]')[0]
+    assert json_nesting_scan('["\\\\"' + "[" * 100 + '"]')[0]
 
 
 def zip_bytes(entries: dict[str, str]) -> bytearray:
@@ -179,3 +242,59 @@ def test_the_step_by_step_check_used_on_windows_refuses_links(tmp_path: Path) ->
     (root / "content").symlink_to(elsewhere, target_is_directory=True)
     with pytest.raises(OSError, match="symbolic link"):
         _read_checking_each_step(str(root), ["content", "a.md"], 1 << 20)
+
+
+TTL = "@prefix ex: <https://example.com/> .\n"
+
+
+def blank_nodes(levels: int) -> str:
+    return TTL + "ex:a ex:p " + "[ ex:p " * levels + "ex:z" + " ]" * levels + " .\n"
+
+
+def collections(levels: int) -> str:
+    return TTL + "ex:a ex:p " + "( " * levels + "ex:z" + " )" * levels + " .\n"
+
+
+def mixed(levels: int) -> str:
+    opens = "".join("[ ex:p " if i % 2 else "( " for i in range(levels))
+    closes = "".join(" ]" if i % 2 else " )" for i in reversed(range(levels)))
+    return TTL + "ex:a ex:p " + opens + "ex:z" + closes + " .\n"
+
+
+def structure_codes(text: str) -> list[tuple[str, str]]:
+    diagnostics = Diagnostics()
+    parse_structure(text, "structure.ttl", "package", None, diagnostics, DEFAULT_LIMITS)
+    return [(d.code, d.message) for d in diagnostics.items]
+
+
+@pytest.mark.parametrize("build", [blank_nodes, collections, mixed])
+def test_structure_nesting_is_bounded(build: Callable[[int], str]) -> None:
+    # Contract §3: each blank-node property list or collection is one level; the outermost is level 1.
+    assert structure_codes(build(MAX_NESTING)) == []
+    for levels in (MAX_NESTING + 1, 100_000):
+        found = structure_codes(build(levels))
+        assert [code for code, _ in found] == ["O001_ONTOLOGY_UNPARSEABLE"]
+        assert "nested more than 64 levels" in found[0][1]
+
+
+def test_structure_nesting_follows_turtle_names_strings_and_comments() -> None:
+    # A # inside a name (escaped) or a string is not a comment; brackets in a string or comment open nothing.
+    def after_names(levels: int) -> str:
+        return TTL + 'ex:a ex:p "#[[[(((", ex:b\\#c ; ex:q ' + "[ ex:p " * levels + "ex:z" + " ]" * levels + " .\n"
+
+    assert structure_codes(after_names(MAX_NESTING)) == []
+    assert "nested more than 64" in structure_codes(after_names(MAX_NESTING + 1))[0][1]
+    text = TTL + "# [[[[ (((( \n" + 'ex:a ex:p "' + "[(" * 10_000 + '" .\n'
+    assert structure_codes(text) == []
+
+
+def test_structure_nesting_at_the_limit_never_depends_on_the_callers_stack() -> None:
+    def deep(frames: int) -> list[tuple[str, str]]:
+        return deep(frames - 1) if frames else structure_codes(blank_nodes(MAX_NESTING))
+
+    assert deep(sys.getrecursionlimit() - 200) == []
+
+
+def test_a_structure_nested_past_the_limit_is_o001(tmp_path: Path) -> None:
+    files = {"moca.json": json.dumps(MANIFEST), "content/a.md": NODE, "structure.ttl": blank_nodes(100_000)}
+    assert "O001_ONTOLOGY_UNPARSEABLE" in codes(package(tmp_path / "p", files))

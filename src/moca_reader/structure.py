@@ -8,13 +8,15 @@ parses it (and overlays, ADR-0008) into facts, checks node bindings, and builds 
 from __future__ import annotations
 
 import re
+import threading
 from dataclasses import dataclass, field
 from typing import Any
 
 import rdflib
+from rdflib.plugins.parsers.notation3 import RDFSink, SinkParser
 from rdflib.plugins.stores.memory import Memory
 
-from ._js import get, js_sorted, utf16_key
+from ._js import MAX_NESTING, get, js_sorted, utf16_key
 from .content import ContentNode, Representation
 from .diagnostics import Diagnostics
 
@@ -69,6 +71,50 @@ class _Recorder(Memory):
         super().add(triple, context, quoted)
 
 
+class _TooDeep(ValueError):
+    pass
+
+
+class _NestingLimitedParser(SinkParser):
+    """rdflib's Turtle parser, refusing nesting past MAX_NESTING as it parses (contract §3). Each blank-node property
+    list ``[ ... ]`` and each collection ``( ... )`` is one level, the outermost is level 1. The parser's own reading
+    of the text decides what opens a level, so names, strings and comments are never mistaken for one."""
+
+    _depth = 0
+
+    def node(self, argstr: str, i: int, res: Any, subjectAlready: Any = None) -> int:
+        j = self.skipSpace(argstr, i)
+        if j < 0 or argstr[j] not in "[(":
+            return super().node(argstr, i, res, subjectAlready)
+        if self._depth >= MAX_NESTING:
+            raise _TooDeep(f"blank nodes and collections are nested more than {MAX_NESTING} levels deep")
+        self._depth += 1
+        try:
+            return super().node(argstr, i, res, subjectAlready)
+        finally:
+            self._depth -= 1
+
+
+def _parse_turtle(source: str, store: _Recorder) -> None:
+    """Parses Turtle into store. Contract §3: the nesting limit is fixed, so the parse runs on a thread of its own:
+    whether 64 levels fit never depends on how deep the caller's stack already is."""
+    failure: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            graph = rdflib.Graph(store=store)
+            parser = _NestingLimitedParser(RDFSink(graph), baseURI=graph.absolutize(_RELATIVE_BASE), turtle=True)
+            parser.loadBuf(source)
+        except BaseException as err:
+            failure.append(err)
+
+    thread = threading.Thread(target=run, name="moca-structure-parse", daemon=True)
+    thread.start()
+    thread.join()
+    if failure:
+        raise failure[0]
+
+
 def _iri(term: Any) -> str:
     text = str(term)
     return text[len(_RELATIVE_BASE) :] if text.startswith(_RELATIVE_BASE) else text
@@ -95,7 +141,7 @@ def parse_structure(
     prefixes.update(m[1] for m in _PREFIX_DECL.finditer(source) if m[1])
     store = _Recorder()
     try:
-        rdflib.Graph(store=store).parse(data=source, format="turtle", publicID=_RELATIVE_BASE)
+        _parse_turtle(source, store)
     except Exception as err:  # rdflib raises several types for bad syntax
         diagnostics.add("O001_ONTOLOGY_UNPARSEABLE", f"{file} is not parseable Turtle: {err}", file)
         return facts, prefixes, False
