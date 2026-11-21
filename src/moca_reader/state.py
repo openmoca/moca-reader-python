@@ -25,6 +25,8 @@ class _Review:
 
 def package_state(result: PackageResult) -> dict[str, Any]:
     """A package's state, as plain JSON a host can keep beside its store."""
+    from .reader import terms_source_of
+
     contests: dict[str, list[Any]] = {}
     for node in result.nodes:
         for rep in node.representations:
@@ -71,6 +73,10 @@ def package_state(result: PackageResult) -> dict[str, Any]:
     composition = composition_of(result)
     if composition:
         state["composition"] = composition
+    # Contract §15.3: what resolving the package's terms needs, so a store search applies a terms request too.
+    terms = terms_source_of(result)
+    if terms is not None:
+        state["terms"] = terms
     return state
 
 

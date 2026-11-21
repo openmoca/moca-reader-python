@@ -47,6 +47,7 @@ from .reading_order import ReadingOrder, resolve_reading_order
 from .reviews import review_status_of
 from .source import DEFAULT_LIMITS, PackageSource, TargetError, open_source
 from .structure import PackageStructure, read_structure
+from .terms import UNSET, authority_of, check_terms, loosened_nodes
 from .unicode import normalize
 
 # A009 invalidates: it is only raised when the host requires a signature.
@@ -108,6 +109,9 @@ class PackageResult:
     reading_order: str | None = None
     # Package spec §4.12: informative, as written, when the manifest passes its schema.
     date_published: str | None = None
+    date_packaged: str | None = None
+    # Contract §15.1: {"declared"?, "problems", "authority"} when the manifest passes its schema; else None.
+    terms: dict[str, Any] | None = None
     # Attestations §7.1: {"originalDigest", "issuers", "changedFiles"} for an issued copy that passed verification.
     issued_copy: dict[str, Any] | None = None
     _reading_order: ReadingOrder | None = field(default=None, repr=False)
@@ -265,6 +269,11 @@ def _read(
         diagnostics.add("M001_MANIFEST_INVALID_JSON", f"moca.json is not valid UTF-8 JSON: {err}", MANIFEST)
         return _finish(result, diagnostics)
     result.manifest = manifest
+    # Contract §5: a manifest that is JSON but not an object fails its schema, and there is nothing more to read.
+    if not isinstance(manifest, dict):
+        check_manifest(manifest, diagnostics, options.known_profiles)
+        result.manifest = None
+        return _finish(result, diagnostics)
     if envelope_check is not None:
         why = outline_mismatch(envelope_check, manifest, data, options.limits["maxImageBytes"])
         if why:
@@ -278,8 +287,20 @@ def _read(
             result.apps = list(manifest["apps"])
         if isinstance(manifest.get("datePublished"), str):
             result.date_published = manifest["datePublished"]
+        if isinstance(manifest.get("datePackaged"), str):
+            result.date_packaged = manifest["datePackaged"]
         # Package spec §4.6-4.8: held aside, and exposed by _finish only when the package is valid.
         result._catalogue = check_catalogue(manifest, data, diagnostics, options.limits["maxImageBytes"])
+        # Package spec §4.14: terms are checked inside; a problem is a warning, never M002.
+        declared = manifest.get("terms", UNSET)
+        problems = check_terms(declared)
+        for p in problems:
+            diagnostics.add(p["code"], p["message"], MANIFEST)
+        for loose in loosened_nodes(declared):
+            diagnostics.add("U002_TERMS_LOOSENED", loose["message"], MANIFEST)
+        terms_problems: list[dict[str, str]] | None = [{"code": p["code"], "path": p["path"]} for p in problems]
+    else:
+        terms_problems = None
     profiles = get(manifest, "profiles")
     result.profiles = list(profiles) if isinstance(profiles, dict) else []
     version = get(manifest, "mocaVersion")
@@ -344,6 +365,13 @@ def _read(
             MANIFEST,
         )
     _check_relation_authority(result, diagnostics)
+    # Contract §15.1-15.2: the terms as written, their problems, and who stated them.
+    if terms_problems is not None:
+        result.terms = {
+            **({"declared": manifest["terms"]} if "terms" in manifest else {}),
+            "problems": terms_problems,
+            "authority": authority_of(result.signers),
+        }
     _resolve_members(result, members, options, stack, diagnostics, budget)
     return _finish(result, diagnostics)
 
@@ -634,6 +662,15 @@ def _resolve_members(
             entry.status = "mismatch"
         else:
             entry.status = "resolved"
+
+
+def terms_source_of(result: PackageResult | None) -> dict[str, Any] | None:
+    """What resolving a result's terms needs (contract §15.3): its terms and authority; None without a terms
+    result."""
+    if result is None or result.terms is None:
+        return None
+    declared = result.terms.get("declared")
+    return {"terms": declared if declared is not None else {}, "authority": result.terms["authority"]}
 
 
 def _instant(value: str) -> float:

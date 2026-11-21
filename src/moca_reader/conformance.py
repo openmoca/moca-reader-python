@@ -217,6 +217,7 @@ def actual_for(root: str, c: dict[str, Any]) -> dict[str, Any]:
             "concepts": s.get("concepts"),
             "scope": s.get("scope"),
             "up_to": s.get("upTo"),
+            "terms": s.get("terms"),
         }
         if o.get("backend") == "store":
             # Everything listed is ingested (each package on its own with `ingestSeparately`); only the packages
@@ -252,6 +253,7 @@ def actual_for(root: str, c: dict[str, Any]) -> dict[str, Any]:
                 audiences=o.get("audiences"),
                 allow_unlabelled=o.get("allowUnlabelled") is True,
                 hooks=hooks,
+                terms_limits=o.get("termsLimits"),
             )
             records = store_search.search(s["query"], **options)
             codes.extend(d.code for d in store_search.diagnostics)
@@ -279,6 +281,7 @@ def actual_for(root: str, c: dict[str, Any]) -> dict[str, Any]:
             audiences=o.get("audiences"),
             hooks=hooks,
             allow_unlabelled=o.get("allowUnlabelled") is True,
+            terms_limits=o.get("termsLimits"),
         )
         records = search.search(s["query"], **options)
         # Contract §9: the search's own findings, such as S008.
@@ -322,9 +325,11 @@ def actual_for(root: str, c: dict[str, Any]) -> dict[str, Any]:
         "apps": result.apps,
         "readingOrder": result.reading_order,
         "datePublished": result.date_published,
+        "datePackaged": result.date_packaged,
         "publisher": result.publisher,
         "url": result.url,
         "contributors": result.contributors,
+        "terms": result.terms,
         "issuedCopy": result.issued_copy,
         "evidenceMatched": evidence_matched,
         "evidenceLocated": evidence_located,

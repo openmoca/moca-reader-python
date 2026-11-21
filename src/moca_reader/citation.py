@@ -15,6 +15,7 @@ from .audience import audience_of
 from .content import ContentNode, Representation, sources_by_id
 from .digest import utf8
 from .reviews import review_status_of
+from .terms import UNSET, rights_of
 
 if TYPE_CHECKING:
     from .reader import PackageResult
@@ -67,6 +68,15 @@ def _date_or_none(value: Any) -> Any:
     return None if math.isnan(timestamp(value)) else value
 
 
+def _generated(value: Any) -> dict[str, str]:
+    """Reader contract §7: ``generated``, with ``model`` kept when it is a non-empty string."""
+    out = _declared(value)
+    model = value.get("model")
+    if isinstance(model, str) and model != "":
+        out["model"] = model
+    return out
+
+
 def _has_actor(entry: Any) -> bool:
     """An OKF ``generated`` or ``verified`` entry that names its actor."""
     return isinstance(entry, dict) and entry.get("by") is not None and js_string(entry["by"]) != ""
@@ -116,6 +126,8 @@ def citation_for(
     # Package spec §4.12: informative, as written.
     if result.date_published is not None:
         package["datePublished"] = result.date_published
+    if result.date_packaged is not None:
+        package["datePackaged"] = result.date_packaged
 
     node_part: dict[str, Any] = {
         "id": f"{js_string(manifest.get('id'))}#{node.path}",
@@ -144,6 +156,16 @@ def citation_for(
     # Package spec §4.13: the node's own credits, never the package's.
     if rep.contributors is not None:
         node_part["contributors"] = copy.deepcopy(rep.contributors)
+    # Contract §7: the node's licence and copyright, from its terms.nodes entry or the package's.
+    terms = result.terms or {}
+    node_part.update(
+        rights_of(
+            terms.get("declared", UNSET),
+            terms.get("problems"),
+            manifest.get("license") if result.distribution is not None else None,
+            node.path,
+        )
+    )
     # Package spec §5.7: the valid media descriptions, in order.
     if rep.media:
         node_part["media"] = [d.to_json() for d in rep.media]
@@ -154,7 +176,7 @@ def citation_for(
     trust: dict[str, Any] = {
         "status": fm["status"] if fm.get("status") in ("draft", "stable", "deprecated") else "stable",
         # An entry with no actor (`by`) is dropped rather than reported as "undefined".
-        "generated": _declared(generated) if _has_actor(generated) else None,
+        "generated": _generated(generated) if _has_actor(generated) else None,
         "declaredVerified": [_declared(v) for v in verified_list if _has_actor(v)],
         "attestedReviews": [
             {**_review_json(r), "packageVerified": bool(result.signers)}
