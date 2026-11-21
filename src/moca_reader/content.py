@@ -10,7 +10,15 @@ from typing import TYPE_CHECKING, Any
 from ._js import decode_uri_component, get, js_sorted, js_trim, posix_dirname, posix_join, utf16_key
 from .alternates import default_sync, range_to_reference, sync_problem
 from .diagnostics import Diagnostics
-from .evidence_text import check_selector, is_media_time_range, normalised_text, source_kind, webvtt
+from .evidence_text import (
+    JS_SPACE_CLASS,
+    check_selector,
+    forward_finder,
+    is_media_time_range,
+    normalised_text,
+    source_kind,
+    webvtt,
+)
 from .frontmatter import split_frontmatter
 from .manifest import checked_credit
 from .schemas import validate_against
@@ -22,9 +30,101 @@ if TYPE_CHECKING:
 CONTENT_DIR = "content"
 _RESERVED = {"index.md", "log.md"}
 _SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
-_LINK = re.compile(
-    r"!?\[[^\]]*\]\([\t\n\v\f\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]*(<[^>]+>|[^)\t\n\v\f\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]+)(?:[\t\n\v\f\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]+(?:\"[^\"]*\"|'[^']*'))?[\t\n\v\f\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]*\)"
-)
+_SPACE = re.compile(f"[{JS_SPACE_CLASS}]")
+_TARGET_STOP = re.compile(f"[){JS_SPACE_CLASS}]")
+
+
+def link_targets(line: str) -> list[str]:
+    """The target of every Markdown link and image in a line, as written (a ``<...>`` target keeps its brackets).
+    It gives what the first group of
+
+        !?\\[[^\\]]*\\]\\(\\s*(<[^>]+>|[^)\\s]+)(?:\\s+(?:"[^"]*"|'[^']*'))?\\s*\\)
+
+    captures, in one pass over the line: contract §3 bounds a Reader's work by the size of what it reads, and that
+    expression rescans the line from every ``[``."""
+    targets: list[str] = []
+    opening, closing, gt = forward_finder(line, "["), forward_finder(line, "]"), forward_finder(line, ">")
+    stop_at = -2
+
+    def target_end(start: int) -> int:
+        """The end of a plain target: the next ")" or white space, or the end of the line."""
+        nonlocal stop_at
+        if stop_at != -1 and stop_at < start:
+            m = _TARGET_STOP.search(line, start)
+            stop_at = m.start() if m else -1
+        return len(line) if stop_at == -1 else stop_at
+
+    spaces: dict[int, int] = {}
+
+    def skip_space(p: int) -> int:
+        e = spaces.get(p)
+        if e is None:
+            e = p
+            while e < len(line) and _SPACE.match(line[e]):
+                e += 1
+            spaces[p] = e
+        return e
+
+    def tail() -> Callable[[int], int]:
+        """What follows a target: an optional title in quotes, then ")". The index after the ")", or -1."""
+        quote = {'"': forward_finder(line, '"'), "'": forward_finder(line, "'")}
+        known: dict[int, int] = {}
+
+        def after(p: int) -> int:
+            if p in known:
+                return known[p]
+            w = skip_space(p)
+            end = -1
+            mark = _char(line, w)
+            if w > p and mark in ('"', "'"):
+                q = quote[mark](w + 1)
+                if q >= 0 and _char(line, skip_space(q + 1)) == ")":
+                    end = skip_space(q + 1) + 1
+            if end < 0 and _char(line, w) == ")":
+                end = w + 1
+            known[p] = end
+            return end
+
+        return after
+
+    # Each kind of target asks from rising positions of its own, so each has its own searches.
+    after_angle, after_plain = tail(), tail()
+    pos = 0
+    while True:
+        i = opening(pos)
+        if i < 0:
+            break
+        j = closing(i + 1)
+        if j < 0:
+            break
+        end = -1
+        target = ""
+        if _char(line, j + 1) == "(":
+            p = skip_space(j + 2)
+            if _char(line, p) == "<":
+                q = gt(p + 1)
+                if q > p + 1:
+                    end = after_angle(q + 1)
+                    target = line[p : q + 1]
+            if end < 0:
+                e = target_end(p)
+                if e > p:
+                    end = after_plain(e)
+                    target = line[p:e]
+        # Every "[" up to j closes at j, so none of them starts a link either.
+        if end < 0:
+            pos = j + 1
+            continue
+        targets.append(target)
+        pos = end
+    return targets
+
+
+def _char(text: str, i: int) -> str:
+    """``text[i]`` in JavaScript: empty past either end."""
+    return text[i] if 0 <= i < len(text) else ""
+
+
 _PATH_REF = re.compile(r"^(\.{1,2}/|/)")
 _EVIDENCE_DIRS = ("sources/", "media/")
 _LOCALE = re.compile(r"^(.*)\.([A-Za-z]{2,3}(?:-[A-Za-z0-9]{1,8})*)\.md\Z", re.IGNORECASE | re.ASCII | re.DOTALL)
@@ -571,8 +671,8 @@ def _check_paths(file: str, fm: dict[str, Any], body: str, files: dict[str, str]
             fence = not fence
         if fence:
             continue
-        for m in _LINK.finditer(re.sub(r"`[^`]*`", "", line)):
-            target = re.sub(r"^<|>\Z", "", m[1])
+        for written in link_targets(re.sub(r"`[^`]*`", "", line)):
+            target = re.sub(r"^<|>\Z", "", written)
             if (_SCHEME.match(target) and not _DRIVE.match(target)) or target.startswith("#"):
                 continue
             path, escapes, reason = resolve_reference_reason(file, target)
