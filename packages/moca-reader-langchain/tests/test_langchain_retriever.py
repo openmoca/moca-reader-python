@@ -63,3 +63,11 @@ def test_the_readme_example_runs(moca_spec: Path, monkeypatch: object) -> None:
         ),
         {},
     )
+
+
+def test_the_hosts_terms_request_reaches_the_gate(public_search: Search) -> None:
+    unrated = MocaRetriever(search=public_search, terms={"rating": {"explicit": False}}).invoke("refund window")
+    assert unrated == []
+    allowed = {"ai": {"destination": "provider"}, "rating": {"explicit": False, "allowUnrated": True}}
+    docs = MocaRetriever(search=public_search, terms=allowed).invoke("refund window")
+    assert docs and docs[0].metadata["moca_citation"]["terms"]["ai"]["allowed"]["provider"]["value"] is True

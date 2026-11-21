@@ -44,6 +44,11 @@ class MocaRetriever(BaseRetriever):
 
     ``search`` is the host's ``moca_reader.Search``. The other fields are the search options for every call; they
     are the host's, set when the retriever is built.
+
+    ``terms`` is the host's terms request (Reader contract §15.4), for example
+    ``{"ai": {"destination": "provider", "conditions": ["noTraining"]}}`` when the documents go to a third party's
+    model. With it, the gate also removes records whose creator's terms do not allow that use. Without it, terms
+    remove nothing.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -54,6 +59,7 @@ class MocaRetriever(BaseRetriever):
     concepts: list[str] | None = None
     scope: str | None = None
     include_all: bool = False
+    terms: dict[str, Any] | None = None
 
     def _get_relevant_documents(self, query: str, *, run_manager: CallbackManagerForRetrieverRun) -> list[Document]:
         records = self.search.search(
@@ -63,5 +69,6 @@ class MocaRetriever(BaseRetriever):
             locale=self.locale,
             concepts=self.concepts,
             scope=self.scope,
+            terms=self.terms,
         )
         return [to_document(r) for r in records]

@@ -28,6 +28,13 @@ outside your audiences never comes back, and nothing a caller passes can widen
 that. Use it anywhere LlamaIndex takes a retriever, such as a
 `RetrieverQueryEngine`.
 
+**Creators' terms.** A package can say how its work may be used with AI
+(package spec §4.14). Terms are applied only when you ask: pass your terms
+request as `terms`, for example
+`terms={"ai": {"destination": "provider", "conditions": ["noTraining"]}}` when
+the results go to a third party's model, and the gate also removes records
+whose terms do not allow that use. Without `terms`, terms remove nothing.
+
 Each result is a `NodeWithScore` holding a `TextNode`:
 
 | Field | Holds |

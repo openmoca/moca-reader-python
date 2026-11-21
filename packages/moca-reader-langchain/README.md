@@ -25,8 +25,15 @@ for doc in retriever.invoke("How long is the refund window?"):
 hybrid or your own store), its audiences and its hooks. Every call goes through
 the Reader's gate, so content that is out of force, superseded, deprecated or
 outside your audiences never comes back, and nothing a caller passes can widen
-that. `limit`, `locale`, `concepts`, `scope` and `include_all` are set when you
-build the retriever.
+that. `limit`, `locale`, `concepts`, `scope`, `include_all` and `terms` are set when
+you build the retriever.
+
+**Creators' terms.** A package can say how its work may be used with AI
+(package spec §4.14). Terms are applied only when you ask: pass your terms
+request as `terms`, for example
+`terms={"ai": {"destination": "provider", "conditions": ["noTraining"]}}` when
+the results go to a third party's model, and the gate also removes records
+whose terms do not allow that use. Without `terms`, terms remove nothing.
 
 Each result is a LangChain `Document`:
 

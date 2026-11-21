@@ -55,3 +55,10 @@ def test_the_readme_example_runs(moca_spec: Path) -> None:
         ),
         {},
     )
+
+
+def test_the_hosts_terms_request_reaches_the_gate(public_search: Search) -> None:
+    assert MocaRetriever(public_search, terms={"rating": {"explicit": False}}).retrieve("refund window") == []
+    allowed = {"ai": {"destination": "provider"}, "rating": {"explicit": False, "allowUnrated": True}}
+    nodes = MocaRetriever(public_search, terms=allowed).retrieve("refund window")
+    assert nodes and nodes[0].node.metadata["moca_citation"]["terms"]["ai"]["allowed"]["provider"]["value"] is True

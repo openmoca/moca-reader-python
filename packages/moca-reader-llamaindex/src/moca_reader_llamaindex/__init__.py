@@ -50,6 +50,11 @@ class MocaRetriever(BaseRetriever):
     """Retrieves citation records from MOCA packages as LlamaIndex ``NodeWithScore``s.
 
     ``search`` is the host's ``moca_reader.Search``; the other arguments are the search options for every call.
+
+    ``terms`` is the host's terms request (Reader contract §15.4), for example
+    ``{"ai": {"destination": "provider", "conditions": ["noTraining"]}}`` when the nodes go to a third party's model.
+    With it, the gate also removes records whose creator's terms do not allow that use. Without it, terms remove
+    nothing.
     """
 
     def __init__(
@@ -61,6 +66,7 @@ class MocaRetriever(BaseRetriever):
         concepts: list[str] | None = None,
         scope: str | None = None,
         include_all: bool = False,
+        terms: dict[str, Any] | None = None,
         callback_manager: CallbackManager | None = None,
     ) -> None:
         super().__init__(callback_manager=callback_manager)
@@ -71,6 +77,7 @@ class MocaRetriever(BaseRetriever):
             "locale": locale,
             "concepts": concepts,
             "scope": scope,
+            "terms": terms,
         }
 
     def _retrieve(self, query_bundle: QueryBundle) -> list[NodeWithScore]:
