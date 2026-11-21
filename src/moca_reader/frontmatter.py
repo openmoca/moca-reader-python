@@ -58,6 +58,11 @@ def split_frontmatter(text: str, max_bytes: float = math.inf) -> FrontmatterSpli
         if mark is not None:
             result.line = mark.line + 2
         return result
+    except Exception as err:
+        # Contract §3: the Reader never raises for a malformed package. Any other error from the YAML library
+        # (a plain ValueError for an escape past U+10FFFF, for one) is C002 too.
+        result.error = f"frontmatter is not valid YAML: {err}"
+        return result
     if not isinstance(result.data, dict):
         result.error = "frontmatter is not a YAML mapping"
     return result
