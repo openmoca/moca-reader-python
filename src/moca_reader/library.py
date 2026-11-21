@@ -9,8 +9,9 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from ._js import get, js_string
-from .citation import CitationRecord, RelationIndex, citation_for, pick_representation
+from ._js import get, js_string, utf16_key
+from .audience import record_allowed
+from .citation import CitationRecord, RelationIndex, citation_for, passes_default_policy, pick_representation
 from .diagnostics import Diagnostics
 from .relations import relation_index_of
 from .source import DEFAULT_LIMITS
@@ -81,6 +82,96 @@ class Library:
         if self._structure is None:
             self._structure = StructureIndex(self, self.overlay_facts)
         return self._structure
+
+    def structure_for(self, terms: Any = None, terms_limits: Any = None) -> StructureIndex:
+        """The structure operations for a host that hands their answers to a model (Reader contract §10, "Under a
+        terms request"; moca-spec ADR-0041): the merged structure of the loaded packages that are not closed for the
+        request, and the overlays. A request with no ``ai`` part closes nothing, so it is the whole structure."""
+        from .structure_ops import StructureIndex
+        from .terms_gate import library_resolver
+
+        if not isinstance(terms, dict) or not isinstance(terms.get("ai"), (dict, list)):
+            return self.structure
+        resolver = library_resolver(self, _limits(terms_limits), terms)
+        open_packages = [p for p in self.packages if not resolver.closure(p.result.digest)["closed"]]
+        return StructureIndex(self, self.overlay_facts, open_packages)
+
+    def catalogue(
+        self,
+        terms: Any = None,
+        audiences: list[str] | None = None,
+        allow_unlabelled: bool = False,
+        include_all: bool = False,
+        terms_limits: Any = None,
+    ) -> list[dict[str, Any]]:
+        """What a model may be told about the loaded packages (Reader contract §15.4, "The catalogue rule";
+        moca-spec ADR-0041), ordered by id then version.
+
+        A package has an entry only when one of its records, or of its members' at any depth, passes the audience
+        set and (unless ``include_all``) the default retrieval policy; when its own rating passes the request's
+        rating gate; and when it is not hidden. A closed package's entry has exactly id, version, title, publisher,
+        signed and closedBy. Each entry is valid against catalogue-entry.schema.json.
+        """
+        from .terms import gate_reasons
+        from .terms_gate import library_resolver
+
+        request = terms if isinstance(terms, dict) else None
+        resolver = library_resolver(self, _limits(terms_limits), request)
+        index = self.relation_index()
+        now = self.clock()
+        own: dict[str, bool] = {}
+
+        def passes_own(result: PackageResult) -> bool:
+            digest = result.digest or ""
+            if digest not in own:
+                own[digest] = any(
+                    (include_all or passes_default_policy(r)) and record_allowed(r, audiences, allow_unlabelled is True)
+                    for node in result.nodes
+                    for rep in node.representations
+                    for r in (citation_for(result, node, rep, now, index),)
+                )
+            return own[digest]
+
+        def passes(result: PackageResult) -> bool:
+            # Its own records, or those of a member it composes, at any depth; each package walked once.
+            seen: set[str] = set()
+            queue = [result]
+            while queue:
+                r = queue.pop(0)
+                if r.digest in seen:
+                    continue
+                seen.add(r.digest or "")
+                if passes_own(r):
+                    return True
+                queue += [
+                    m.result
+                    for m in r.members
+                    if m.status == "resolved" and m.result is not None and m.result.valid and m.result.digest
+                ]
+            return False
+
+        listed: list[tuple[PackageResult, dict[str, Any]]] = []
+        ordered = sorted(
+            (p.result for p in self.packages),
+            key=lambda r: (utf16_key(js_string(r.manifest.get("id"))), utf16_key(js_string(r.manifest.get("version")))),
+        )
+        for result in ordered:
+            if not passes(result):
+                continue
+            if request is not None and "rating" in request:
+                # The package's own rating, never a node's, as a record with that rating would be gated.
+                declared = (result.terms or {}).get("declared")
+                rating = declared.get("rating", None) if isinstance(declared, dict) else None
+                if isinstance(declared, dict) and "rating" in declared and rating is None:
+                    rating = False
+                if gate_reasons({"rating": request["rating"]}, {}, rating):
+                    continue
+            closure = resolver.closure(result.digest)
+            if closure["hidden"]:
+                continue
+            listed.append((result, closure))
+        present = {f"{r.manifest.get('id')}@{r.manifest.get('version')}" for r, _ in listed}
+        return [_entry(result, closure, present) for result, closure in listed]
 
     def add(self, result: PackageResult, chunks: list[dict[str, Any]] | None = None, index: Any = None) -> Library:
         """Adds a package read by read_package(), with a bound sidecar's chunks and index. Invalid packages are refused."""
@@ -179,6 +270,49 @@ class Library:
         return Search(self, LexicalBackend(self), audiences=audiences, allow_unlabelled=allow_unlabelled).search(
             query, limit=limit, include_all=include_all, locale=locale, concepts=concepts, scope=scope, up_to=up_to
         )
+
+
+def _limits(terms_limits: Any) -> Any:
+    from .terms import UNSET
+
+    return terms_limits if isinstance(terms_limits, (dict, list)) else UNSET
+
+
+def _entry(result: PackageResult, closure: dict[str, Any], present: set[str]) -> dict[str, Any]:
+    """A catalogue entry (contract §15.4): a closed package's has exactly id, version, title, publisher, signed and
+    closedBy; an open package's adds what the manifest has of description and tags, and its members that have an
+    entry of their own."""
+    m = result.manifest
+    name = (result.publisher or {}).get("name")
+    publisher = {"publisher": name} if isinstance(name, str) else {}
+    signed = len(result.signers) > 0
+    if closure["closed"]:
+        return {
+            "id": m.get("id"),
+            "version": m.get("version"),
+            "title": m.get("title"),
+            **publisher,
+            "signed": signed,
+            "closedBy": list(closure["closedBy"]),
+        }
+    entry: dict[str, Any] = {"id": m.get("id"), "version": m.get("version"), "title": m.get("title")}
+    if isinstance(m.get("description"), str):
+        entry["description"] = m["description"]
+    entry.update(publisher)
+    entry["signed"] = signed
+    if isinstance(result.tags, list):
+        entry["tags"] = list(result.tags)
+    members = m.get("members")
+    if isinstance(members, list) and members:
+        entry["members"] = [
+            x["id"]
+            for x in members
+            if isinstance(x, dict)
+            and isinstance(x.get("id"), str)
+            and isinstance(x.get("version"), str)
+            and f"{x['id']}@{x['version']}" in present
+        ]
+    return entry
 
 
 def _key(result: PackageResult) -> str:
