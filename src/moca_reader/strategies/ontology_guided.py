@@ -30,9 +30,10 @@ def ontology_guided(expand_requires: bool = True) -> SearchHooks:
         for c in ctx.structure.graph.concepts.values():
             if not c.declared:
                 continue
+            # Reader interface §5.4: the preferred label or any alternative label, as written (no forms made here).
             label = preferred(c.labels)
-            w = _words(label) if label else []
-            if w and all(x in q for x in w):
+            labels = [*([label] if label else []), *(x for values in c.alt_labels.values() for x in values)]
+            if any((w := _words(x)) and all(y in q for y in w) for x in labels):
                 matched.append(c.iri)
         if not matched:
             return {}

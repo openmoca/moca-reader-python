@@ -16,27 +16,27 @@ permissions:
 # The other MOCA repositories, at fixed refs: release tags, or commits while a Spec Change
 # Proposal is in flight; never a branch (moca-spec CONTRIBUTING.md).
 env:
-  MOCA_SPEC_REF: v0.6.0
-  MOCA_READER_TYPESCRIPT_REF: v0.6.0
-  MOCA_TOOLS_REF: v0.6.0
+  MOCA_SPEC_REF: fd1e0e0cddc6dac7244e7504951f213ed3fa720e  # release-0.7.0 (0.7.0 release candidate); v0.7.0 once tagged
+  MOCA_READER_TYPESCRIPT_REF: b2e196d0d948cf8a412a4e058cccf623251387f2  # release-0.7.0 (0.7.0 release candidate); v0.7.0 once tagged
+  MOCA_TOOLS_REF: 7e40fa802e0fb974e8745d5ae0eb75284a78182b  # release-0.7.0 (0.7.0 release candidate); v0.7.0 once tagged
 
 jobs:
   deps:
     name: Public dependencies only
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           path: moca-reader-python
       # The check lives in moca-spec, the one copy every open repository runs.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: ${{ github.repository_owner }}/moca-spec
           ref: ${{ env.MOCA_SPEC_REF }}
           path: moca-spec
           # Read access to the other MOCA repos while they are private.
           token: ${{ secrets.MOCA_REPOS_TOKEN || github.token }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
       - run: node moca-spec/scripts/check-deps.mjs moca-reader-python
@@ -50,54 +50,65 @@ jobs:
         python: ['3.11', '3.14']
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           path: moca-reader-python
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: ${{ github.repository_owner }}/moca-spec
           ref: ${{ env.MOCA_SPEC_REF }}
           path: moca-spec
           token: ${{ secrets.MOCA_REPOS_TOKEN || github.token }}
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
         with:
           python-version: ${{ matrix.python }}
       - run: uv sync --locked
         working-directory: moca-reader-python
       - run: uv run ruff check && uv run ruff format --check && uv run mypy
         working-directory: moca-reader-python
+      # The Go age CLI (pinned, checksum-checked) for the age cross-check. On Linux it is required, so the
+      # cross-check can never skip there (MOCA_REQUIRE_GO_AGE).
+      - name: Install the Go age CLI
+        if: runner.os == 'Linux'
+        run: |
+          curl -fsSLo "$RUNNER_TEMP/age.tar.gz" https://github.com/FiloSottile/age/releases/download/v1.3.2/age-v1.3.2-linux-amd64.tar.gz
+          echo "cbe24006683f8eb669266162894b9a522a1af52f2665fbc63a4bb032ed26ac10  $RUNNER_TEMP/age.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/age.tar.gz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/age" >> "$GITHUB_PATH"
       - run: uv run pytest
         working-directory: moca-reader-python
+        env:
+          MOCA_REQUIRE_GO_AGE: ${{ runner.os == 'Linux' && '1' || '' }}
 
   corpus:
     name: Corpus and parity with the reference Reader
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           path: moca-reader-python
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: ${{ github.repository_owner }}/moca-spec
           ref: ${{ env.MOCA_SPEC_REF }}
           path: moca-spec
           token: ${{ secrets.MOCA_REPOS_TOKEN || github.token }}
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: ${{ github.repository_owner }}/moca-reader-typescript
           ref: ${{ env.MOCA_READER_TYPESCRIPT_REF }}
           path: moca-reader-typescript
           token: ${{ secrets.MOCA_REPOS_TOKEN || github.token }}
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: ${{ github.repository_owner }}/moca-tools
           ref: ${{ env.MOCA_TOOLS_REF }}
           path: moca-tools
           token: ${{ secrets.MOCA_REPOS_TOKEN || github.token }}
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
         with:
           python-version: '3.14'
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
       - run: uv sync --locked
@@ -119,43 +130,49 @@ jobs:
     name: Getting-started guide
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           path: moca-reader-python
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: ${{ github.repository_owner }}/moca-spec
           ref: ${{ env.MOCA_SPEC_REF }}
           path: moca-spec
           token: ${{ secrets.MOCA_REPOS_TOKEN || github.token }}
       # moca-spec's corpus runner links the reference Reader and moca-tools until they are on npm.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: ${{ github.repository_owner }}/moca-reader-typescript
           ref: ${{ env.MOCA_READER_TYPESCRIPT_REF }}
           path: moca-reader-typescript
           token: ${{ secrets.MOCA_REPOS_TOKEN || github.token }}
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: ${{ github.repository_owner }}/moca-tools
           ref: ${{ env.MOCA_TOOLS_REF }}
           path: moca-tools
           token: ${{ secrets.MOCA_REPOS_TOKEN || github.token }}
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: '3.11'
-      - uses: astral-sh/setup-uv@v6
-      - uses: actions/setup-node@v4
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
       - run: npm ci
         working-directory: moca-reader-typescript
       - run: npm ci
         working-directory: moca-tools
-      - name: Example package from the moca-spec release
-        env:
-          GH_TOKEN: ${{ secrets.MOCA_REPOS_TOKEN || github.token }}
-        run: gh release download v0.6.0 -R ${{ github.repository_owner }}/moca-spec -p support-kb.moca -p example-trust-root.json -D "$RUNNER_TEMP/assets"
+      # Until v0.7.0 is released, support-kb and the example trust root are packed from the moca-spec checkout:
+      # v0.6.0's support-kb has a string publisher, which 0.7.0 refuses (M002).
+      - run: npm ci
+        working-directory: moca-spec
+      - name: Example package from the moca-spec checkout
+        run: |
+          mkdir -p "$RUNNER_TEMP/assets"
+          node node_modules/@openmoca/moca-lint/bin/moca-lint.js pack examples/support-kb -o "$RUNNER_TEMP/assets/support-kb.moca" --trust-root fixtures/signing-keys/trust-root.json
+          cp fixtures/signing-keys/trust-root.json "$RUNNER_TEMP/assets/example-trust-root.json"
+        working-directory: moca-spec
       - run: uv build --out-dir "$RUNNER_TEMP/dist"
         working-directory: moca-reader-python
       # Until moca-reader is on PyPI and the repositories are public: install the wheel built from this
@@ -164,6 +181,6 @@ jobs:
       - run: >-
           node ../moca-spec/scripts/run-guide.mjs docs/getting-started.md
           --replace "pip install moca-reader=>pip install $RUNNER_TEMP/dist/moca_reader-*.whl"
-          --replace "https://github.com/openmoca/moca-spec/releases/download/v0.6.0/=>file://$RUNNER_TEMP/assets/"
-          --replace "git clone --depth 1 --branch v0.6.0 https://github.com/openmoca/moca-spec.git=>ln -s $GITHUB_WORKSPACE/moca-spec moca-spec"
+          --replace "https://github.com/openmoca/moca-spec/releases/download/v0.7.0/=>file://$RUNNER_TEMP/assets/"
+          --replace "git clone --depth 1 --branch v0.7.0 https://github.com/openmoca/moca-spec.git=>ln -s $GITHUB_WORKSPACE/moca-spec moca-spec"
         working-directory: moca-reader-python

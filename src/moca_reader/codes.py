@@ -32,8 +32,26 @@ CODES: dict[str, tuple[str, str]] = {
         WARNING,
         "The package was written for a newer mocaVersion than this Reader implements; it is read on a best-effort basis.",
     ),
+    "M010_IMAGE_INVALID": (
+        WARNING,
+        "A manifest image is missing, over maxImageBytes, or does not start with the signature of its type. It is left out of the result.",
+    ),
+    "M011_TRANSLATION_LOCALE_UNDECLARED": (ERROR, "A key of translations is not a tag in locales."),
+    "M012_TAG_DUPLICATE": (
+        WARNING,
+        "Two tags in one list are equal, compared case-insensitively. The repeat is dropped.",
+    ),
+    "M013_ALT_IMAGE_UNKNOWN": (WARNING, "A translated alt text names no image in images. It is dropped."),
+    "M014_READING_ORDER_UNRESOLVED": (
+        WARNING,
+        "readingOrder does not name an ordered collection with a member list in the package's own structure.ttl. "
+        "It is ignored.",
+    ),
     "C001_FRONTMATTER_MISSING": (ERROR, "A concept document has no YAML frontmatter (OKF MUST)."),
-    "C002_FRONTMATTER_INVALID": (ERROR, "Frontmatter is not parseable YAML or is not a mapping."),
+    "C002_FRONTMATTER_INVALID": (
+        ERROR,
+        "Frontmatter is not parseable YAML, is not a mapping, repeats a key, uses an alias, or lists two sources with one `id`.",
+    ),
     "C003_TYPE_MISSING": (ERROR, "Frontmatter has no non-empty type (OKF MUST)."),
     "C004_RESERVED_FILE_INVALID": (ERROR, "index.md or log.md breaks the OKF reserved-file rules."),
     "C005_FIELD_INVALID": (WARNING, "A frontmatter field does not match the node schema."),
@@ -45,6 +63,22 @@ CODES: dict[str, tuple[str, str]] = {
     "C011_EVIDENCE_SELECTOR_UNMATCHED": (
         WARNING,
         "An evidence selector does not match the text source file it cites inside the package.",
+    ),
+    # Encrypted packages (moca-encrypted-package.md)
+    "E001_ENCRYPTED_NO_KEY": (
+        ERROR,
+        "An envelope was not opened: no key provider, no key or a kind of key no stanza uses, or no encryption feature.",
+    ),
+    "E002_DECRYPTION_FAILED": (ERROR, "A key was supplied for an envelope, but unwrapping or the header MAC failed."),
+    "E003_PAYLOAD_CORRUPT": (ERROR, "An envelope's encrypted payload failed authentication or was truncated."),
+    "E004_OUTLINE_MISMATCH": (ERROR, "An envelope's outline differs from the decrypted manifest or structure."),
+    "E005_ENVELOPE_INVALID": (
+        ERROR,
+        "An envelope has a missing, repeated or unexpected entry, an encrypted entry that is not stored, or an invalid moca-enc.json.",
+    ),
+    "E006_AGE_HEADER_INVALID": (
+        ERROR,
+        "An envelope's age header is malformed or unsupported, over 64 KiB, or breaks the scrypt rules or limit.",
     ),
     "A001_ATTESTATION_MALFORMED": (ERROR, "An attestation file is not a parseable envelope and statement."),
     "A002_ATTESTATION_INVALID": (ERROR, "An attestation failed verification or does not match the package."),
@@ -63,6 +97,10 @@ CODES: dict[str, tuple[str, str]] = {
         "A package attestation names this id and version with a different digest: the content changed after it was signed.",
     ),
     "A009_SIGNATURE_REQUIRED": (ERROR, "The host requires a valid package attestation and the package has none."),
+    "A010_SIGNER_NOT_FOR_PACKAGE": (
+        ERROR,
+        "A package attestation verifies, but its signer has `ids` in the trust root that do not cover this package id.",
+    ),
     "R001_MEMBER_UNRESOLVED": (WARNING, "A member could not be resolved by the host resolver."),
     "R002_MEMBER_DIGEST_MISMATCH": (ERROR, "A resolved member does not match its pinned digest."),
     "R003_MEMBER_CYCLE": (ERROR, "Members form a cycle."),
@@ -70,9 +108,18 @@ CODES: dict[str, tuple[str, str]] = {
         ERROR,
         "A library was given a second package with the same id and version but a different digest; the second is refused.",
     ),
+    "L002_ISSUED_COPY_DUPLICATE": (
+        INFO,
+        "A library was given a second issued copy of the same original. The second is not loaded.",
+    ),
     "R004_RELATION_UNAUTHORISED": (
         INFO,
         "A supersedes or conflictsWith relation is not authorised by a signer of the package, so it has no effect.",
+    ),
+    "R005_RELATION_TYPE_UNKNOWN": (
+        INFO,
+        "A relation type is not a core type, and no profile the package declares defines it. "
+        "It is preserved and has no effect.",
     ),
     "F001_PROFILE_UNRECOGNISED": (INFO, "A declared profile is not recognised by this reader."),
     "O001_ONTOLOGY_UNPARSEABLE": (
@@ -98,6 +145,38 @@ CODES: dict[str, tuple[str, str]] = {
         WARNING,
         "A loaded package has no vectors a dense backend can search; that package is not searched.",
     ),
+    "S008_UPTO_UNRESOLVED": (
+        WARNING,
+        "A search's upTo is on no loaded package's reading order, neither a member nor a descendant of one. "
+        "It limits nothing.",
+    ),
+    "S009_SIDECAR_ITEMS_REPLACED": (
+        INFO,
+        "A sidecar built from the publisher's package is bound to an issued copy; the items of the files the issuer "
+        "changed were replaced by each file's whole body, without a vector.",
+    ),
+    "S010_SEARCH_TRUNCATED": (
+        WARNING,
+        "A search stopped at a bound the host set before limit records passed the gate; better-matching records that "
+        "pass may exist.",
+    ),
+    # Creators' terms (contract §15)
+    "U001_TERMS_INVALID": (
+        WARNING,
+        "A field of terms is malformed. The package stays valid; the field counts as its strictest value when terms "
+        "are applied.",
+    ),
+    "U002_TERMS_LOOSENED": (
+        WARNING,
+        "A terms.nodes entry, or a composing package, is looser than the package for a permission; the stricter value "
+        "stands.",
+    ),
+    "U003_TERMS_UNKNOWN_VALUE": (
+        WARNING,
+        "A terms field has a value this version does not know. It is exposed, and counts as its strictest value when "
+        "terms are applied.",
+    ),
+    "U004_TERMS_EXCLUDED": (INFO, "A search's terms request removed records; the finding counts them by reason."),
 }
 
 # Codes that are no longer emitted. Codes are never reused.

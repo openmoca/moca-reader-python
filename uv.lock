@@ -1643,7 +1643,7 @@ wheels = [
 
 [[package]]
 name = "moca-reader"
-version = "0.6.0"
+version = "0.7.0"
 source = { editable = "." }
 dependencies = [
     { name = "cryptography" },
@@ -1704,7 +1704,7 @@ dev = [
 
 [[package]]
 name = "moca-reader-langchain"
-version = "0.6.0"
+version = "0.7.0"
 source = { editable = "packages/moca-reader-langchain" }
 dependencies = [
     { name = "langchain-core" },
@@ -1719,7 +1719,7 @@ requires-dist = [
 
 [[package]]
 name = "moca-reader-llamaindex"
-version = "0.6.0"
+version = "0.7.0"
 source = { editable = "packages/moca-reader-llamaindex" }
 dependencies = [
     { name = "llama-index-core" },

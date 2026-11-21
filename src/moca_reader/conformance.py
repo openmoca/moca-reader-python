@@ -26,10 +26,39 @@ from . import (
     StoreScope,
     bind_sidecar,
     directory_resolver,
+    map_time,
     ontology_guided,
     read_package,
 )
+from .age import AGE_DECRYPTOR
+from .envelope import bind_envelope_sidecar
 from .state import package_state
+
+
+def _read_text(path: str) -> str:
+    with open(path, encoding="utf-8") as f:
+        return f.read()
+
+
+def _key_provider(root: str, o: dict[str, Any]) -> Callable[[dict[str, Any]], dict[str, Any]] | None:
+    """The conformance key provider (encrypted packages §5.1): the identities in the case's identity files, its
+    passphrase, or its file key (hex). No key options means no key provider."""
+    if o.get("identities"):
+        identities = [
+            line.strip()
+            for f in o["identities"]
+            for line in _read_text(os.path.join(root, f)).splitlines()
+            if line.strip().startswith("AGE-SECRET-KEY-1")
+        ]
+        return lambda _request: {"identities": identities}
+    if "passphrase" in o:
+        passphrase = o["passphrase"]
+        return lambda _request: {"passphrase": passphrase}
+    if "fileKey" in o:
+        file_key = bytes.fromhex(o["fileKey"])
+        return lambda _request: {"file_key": file_key}
+    return None
+
 
 UNLOADED = "sha256:" + "0" * 64
 
@@ -86,7 +115,7 @@ def hostile_hooks() -> SearchHooks:
 
 def hostile_ingress_hooks() -> SearchHooks:
     """An ingress hook that asks for more than the caller did: the gate must follow the caller."""
-    return SearchHooks(ingress=lambda query, ctx: {"includeAll": True, "limit": 1000, "locale": "fr"})
+    return SearchHooks(ingress=lambda query, ctx: {"includeAll": True, "limit": 1000, "locale": "fr", "upTo": None})
 
 
 def concept_item(x: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -111,8 +140,26 @@ def actual_for(root: str, c: dict[str, Any]) -> dict[str, Any]:
         "clock": (lambda: datetime.fromisoformat(o["now"])) if o.get("now") else None,
         "require_signature": o.get("requireSignature") is True,
         "strict": o.get("strict") is True,
+        # This Reader implements the optional feature `encryption` through moca_reader.age.
+        "decryptor": AGE_DECRYPTOR,
+        "key_provider": _key_provider(root, o),
     }
     overlays = [Overlay(v["id"], v["layer"], path=os.path.join(root, v["path"])) for v in o.get("overlays") or []]
+
+    # Reader interface §4: map_time on the node's default-language citation record, once per call.
+    if c.get("kind") == "map-time":
+        result = read_package(os.path.join(root, c["target"]), **read_options)
+        single = Library()
+        if result.valid:
+            single.add(result)
+        record = next((r for r in single.citations() if r["node"]["path"] == c["node"]), None)
+        return {
+            "codes": [d.code for d in result.diagnostics],
+            "result": [
+                map_time(record, call["from"], call["to"], call["t"]) if record is not None else None
+                for call in c["calls"]
+            ],
+        }
 
     if c.get("kind") == "structure":
         library = Library(overlays=overlays)
@@ -169,6 +216,8 @@ def actual_for(root: str, c: dict[str, Any]) -> dict[str, Any]:
             "locale": s.get("locale"),
             "concepts": s.get("concepts"),
             "scope": s.get("scope"),
+            "up_to": s.get("upTo"),
+            "terms": s.get("terms"),
         }
         if o.get("backend") == "store":
             # Everything listed is ingested (each package on its own with `ingestSeparately`); only the packages
@@ -181,18 +230,33 @@ def actual_for(root: str, c: dict[str, Any]) -> dict[str, Any]:
                     store.ingest(single)
             else:
                 store.ingest(library)
-            allow = {os.path.join(root, t) for t in o.get("allow") or []}
+            # Members' locations come from the member resolver, so compare normalised paths (separators on Windows).
+            allow = {os.path.normcase(os.path.normpath(os.path.join(root, t))) for t in o.get("allow") or []}
             allowed = [
                 package_state(p.result)
                 for p in library.packages
-                if p.result.source and p.result.source.location in allow
+                if p.result.source
+                and p.result.source.location
+                and os.path.normcase(os.path.normpath(p.result.source.location)) in allow
             ]
-            records = Search(
-                StoreScope(allowed, lambda: now, o.get("allowUnsignedRelations") is True),
+            # Contract §9.4: the structure source, packages read into a small library whose structure the hooks see.
+            structure = None
+            if o.get("structure"):
+                structure = Library(clock=lambda: now, overlays=overlays)
+                for t in o["structure"]:
+                    source_result = read_package(os.path.join(root, t), **read_options)
+                    if source_result.valid:
+                        structure.add(source_result)
+            store_search = Search(
+                StoreScope(allowed, lambda: now, o.get("allowUnsignedRelations") is True, structure),
                 store,
                 audiences=o.get("audiences"),
                 allow_unlabelled=o.get("allowUnlabelled") is True,
-            ).search(s["query"], **options)
+                hooks=hooks,
+                terms_limits=o.get("termsLimits"),
+            )
+            records = store_search.search(s["query"], **options)
+            codes.extend(d.code for d in store_search.diagnostics)
             return {"codes": codes, "records": records}
 
         def dense() -> DenseBackend:
@@ -211,33 +275,65 @@ def actual_for(root: str, c: dict[str, Any]) -> dict[str, Any]:
         codes.extend(d.code for d in getattr(backend, "diagnostics", None) or [])
         # Library diagnostics (L): for example two digests for one id@version.
         codes.extend(d.code for d in library.diagnostics.items if d.code.startswith("L"))
-        records = Search(
+        search = Search(
             library,
             backend,
             audiences=o.get("audiences"),
             hooks=hooks,
             allow_unlabelled=o.get("allowUnlabelled") is True,
-        ).search(s["query"], **options)
+            terms_limits=o.get("termsLimits"),
+        )
+        records = search.search(s["query"], **options)
+        # Contract §9: the search's own findings, such as S008.
+        codes.extend(d.code for d in search.diagnostics)
         return {"codes": codes, "records": records}
 
     result = read_package(os.path.join(root, c["target"]), **read_options)
     codes = [d.code for d in result.diagnostics]
     sidecar_usable = None
+    # Encrypted packages §6: the envelope's own index.age, through the same key provider.
+    if o.get("envelopeSidecar"):
+        env_bound = bind_envelope_sidecar(
+            os.path.join(root, c["target"]),
+            result,
+            decryptor=read_options["decryptor"],
+            key_provider=read_options["key_provider"],
+            limits=read_options["limits"],
+        )
+        codes.extend(d.code for d in env_bound.diagnostics)
+        sidecar_usable = env_bound.usable
     if o.get("sidecar"):
         bound = bind_sidecar(os.path.join(root, o["sidecar"]), result)
         codes.extend(d.code for d in bound.diagnostics)
         sidecar_usable = bound.usable
     evidence_matched: dict[str, list[Any]] = {}
+    evidence_located: dict[str, list[Any]] = {}
     if result.valid:
         for r in Library().add(result).citations():
             if r["evidence"]:
                 evidence_matched[r["node"]["path"]] = [e.get("matched") for e in r["evidence"]]
+                evidence_located[r["node"]["path"]] = [e.get("located") for e in r["evidence"]]
     out: dict[str, Any] = {
         "valid": result.valid,
         "codes": codes,
         "capabilities": result.capabilities,
         "digest": result.digest,
+        "distribution": result.distribution,
+        "images": result.images,
+        "translations": result.translations,
+        "tags": result.tags,
+        "apps": result.apps,
+        "readingOrder": result.reading_order,
+        "datePublished": result.date_published,
+        "datePackaged": result.date_packaged,
+        "publisher": result.publisher,
+        "url": result.url,
+        "contributors": result.contributors,
+        "terms": result.terms,
+        "issuedCopy": result.issued_copy,
         "evidenceMatched": evidence_matched,
+        "evidenceLocated": evidence_located,
+        "envelope": result.envelope,
     }
     if sidecar_usable is not None:
         out["sidecarUsable"] = sidecar_usable

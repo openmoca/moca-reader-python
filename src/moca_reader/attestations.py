@@ -19,7 +19,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from ._js import get, json_loads, parse_date
-from .dsse import decode_base64, verify_envelope
+from .dsse import MAX_SIGNATURES, decode_base64, verify_envelope
 from .schemas import validate_against
 from .unicode import normalize
 
@@ -27,10 +27,26 @@ STATEMENT_TYPE = "https://in-toto.io/Statement/v1"
 PAYLOAD_TYPE = "application/vnd.in-toto+json"
 PREDICATE_PACKAGE = "https://w3id.org/moca/attestation/package/v1"
 PREDICATE_REVIEW = "https://w3id.org/moca/attestation/review/v1"
+PREDICATE_ISSUED_COPY = "https://w3id.org/moca/attestation/issued-copy/v1"
 
 
 def _hex_of(digest: str) -> str:
     return digest.removeprefix("sha256:")
+
+
+def issued_copy_statement(
+    package_id: str, version: str, digest: str, original_digest: str, changed_files: dict[str, str]
+) -> dict[str, Any]:
+    """Attestations §3a: the statement for an issued copy. ``changed_files`` maps each path to the publisher's hash."""
+    return {
+        "_type": STATEMENT_TYPE,
+        "subject": [{"name": f"{package_id}@{version}", "digest": {"sha256": _hex_of(digest)}}],
+        "predicateType": PREDICATE_ISSUED_COPY,
+        "predicate": {
+            "original": {"sha256": _hex_of(original_digest)},
+            "changedFiles": {p: {"original": changed_files[p]} for p in sorted(changed_files)},
+        },
+    }
 
 
 def package_statement(package_id: str, version: str, digest: str) -> dict[str, Any]:
@@ -112,6 +128,10 @@ def parse_attestation(path: str, data: bytes) -> ParsedAttestation | str:
     envelope = container if fmt == "dsse" else get(container, "dsseEnvelope")
     if not isinstance(get(envelope, "payload"), str) or not isinstance(get(envelope, "payloadType"), str):
         return "not a DSSE envelope" if fmt == "dsse" else "Sigstore bundle has no dsseEnvelope"
+    # Attestations §7, step 2: an envelope holds at most 16 signature entries.
+    signatures = envelope.get("signatures")
+    if isinstance(signatures, list) and len(signatures) > MAX_SIGNATURES:
+        return f"the envelope has {len(signatures)} signature entries, more than {MAX_SIGNATURES}"
     if envelope["payloadType"] != PAYLOAD_TYPE:
         return f"unexpected payloadType {envelope['payloadType']}"
     payload = decode_base64(envelope["payload"])
@@ -136,7 +156,12 @@ class SignatureResult:
     signer: str | None = None
     reason: str | None = None
     ids: list[str] = field(default_factory=list)
+    # Attestations §6: the trust-root entry lists `ids`, so it signs only the packages they cover.
+    scoped: bool = False
     reviewers: list[str] | None = None
+    # The verifying key (PEM) or Sigstore identity, for an issued copy's consent (package spec §4.11).
+    public_key: str | None = None
+    sigstore: tuple[str, str] | None = None
 
 
 def verify_signature(
@@ -166,7 +191,9 @@ def verify_signature(
             "valid",
             signer=found[1] if found else (signer[-1] if signer else result.keyid),
             ids=ids,
+            scoped=found is not None and isinstance((entry or {}).get("ids"), list),
             reviewers=reviewers,
+            public_key=found[0] if found else None,
         )
     return _verify_sigstore(parsed, trust_root, role)
 
@@ -222,7 +249,14 @@ def _verify_sigstore(parsed: ParsedAttestation, trust_root: TrustRoot, role: str
         ids = [i for i in identity.get("ids", []) if isinstance(i, str)]
         listed = identity.get("reviewers")
         reviewers = [r for r in listed if isinstance(r, str)] if isinstance(listed, list) else None
-        return SignatureResult("valid", signer=f"{issuer} {subject}", ids=ids, reviewers=reviewers)
+        return SignatureResult(
+            "valid",
+            signer=f"{issuer} {subject}",
+            ids=ids,
+            scoped=isinstance(identity.get("ids"), list),
+            reviewers=reviewers,
+            sigstore=(issuer, subject),
+        )
     return SignatureResult("invalid", reason=last)
 
 

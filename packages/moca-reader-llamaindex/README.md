@@ -28,6 +28,15 @@ outside your audiences never comes back, and nothing a caller passes can widen
 that. Use it anywhere LlamaIndex takes a retriever, such as a
 `RetrieverQueryEngine`.
 
+**Creators' terms.** A package can say how its work may be used with AI
+(package spec §4.14). Results go to a model, so every search applies a terms
+request: the gate also removes records whose terms do not allow AI use at
+`destination`. That is `"provider"`, a third party's model, unless your app
+declares `destination="device"` (the person's own device) or
+`destination="host"` (your own service). Name the provider conditions you meet
+in `conditions` (`"noTraining"`, `"noRetention"`), and add a rating request
+with `terms={"rating": {...}}`.
+
 Each result is a `NodeWithScore` holding a `TextNode`:
 
 | Field | Holds |

@@ -10,9 +10,12 @@ from __future__ import annotations
 import math
 import re
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ._js import js_split_ws, js_trim
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 _KINDS = [
     (re.compile(r"\.(txt|text)\Z", re.I | re.A), "text"),
@@ -36,16 +39,126 @@ def _decode_entities(text: str) -> str:
     def entity(m: re.Match[str]) -> str:
         e = m[1]
         if e[0] == "#":
-            cp = int(e[2:], 16) if e[1] in "xX" else int(e[1:], 10)
+            # Leading zeros count for nothing; more digits than any code point has is not a code point.
+            hexadecimal = e[1] in "xX"
+            digits = (e[2:] if hexadecimal else e[1:]).lstrip("0") or "0"
+            if len(digits) > (6 if hexadecimal else 7):
+                return m[0]
+            cp = int(digits, 16 if hexadecimal else 10)
             return chr(cp) if cp <= 0x10FFFF else m[0]
         return _ENTITIES.get(e.lower(), m[0])
 
     return _ENTITY.sub(entity, text)
 
 
+# ECMAScript's white space (\s), as a character class body.
+JS_SPACE_CLASS = "\t\n\v\f\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff"
+
+
+def forward_finder(text: str, needle: str) -> Callable[[int], int]:
+    """A forward search for one string that remembers its last answer, so a run of searches from rising positions
+    costs one pass over the text in total, not one pass each."""
+    at = -2  # the last index found; -1 once there is none left
+
+    def find(start: int) -> int:
+        nonlocal at
+        if at == -1:
+            return -1
+        if at < start:
+            at = text.find(needle, start)
+        return at
+
+    return find
+
+
+def _char(text: str, i: int) -> str:
+    """``text[i]`` in JavaScript: empty past either end."""
+    return text[i] if 0 <= i < len(text) else ""
+
+
+def _link_text(source: str) -> str:
+    """Step 1 of markdown_text, in one pass: what ``re.sub(r"!?\\[([^\\]]*)\\]\\([^)]*\\)", r"\\1", source)``
+    gives, without that expression's repeated scans."""
+    opening, closing, paren = forward_finder(source, "["), forward_finder(source, "]"), forward_finder(source, ")")
+    out: list[str] = []
+    pos = 0
+    while True:
+        i = opening(pos)
+        if i < 0:
+            break
+        j = closing(i + 1)
+        if j < 0:
+            break
+        end = paren(j + 2) if _char(source, j + 1) == "(" else -1
+        if end < 0:
+            # No bracket between i and j opens a link either: they all close at j.
+            if _char(source, j + 1) == "(":
+                break  # and with no ")" left, nothing later is a link
+            out.append(source[pos : j + 1])
+            pos = j + 1
+            continue
+        start = i - 1 if i > pos and source[i - 1] == "!" else i
+        out.append(source[pos:start] + source[i + 1 : j])
+        pos = end + 1
+    return "".join(out) + source[pos:]
+
+
+def strip_tags(text: str) -> str:
+    """Every ``<...>`` removed, in one pass: what ``re.sub(r"<[^>]*>", "", text)`` gives."""
+    out: list[str] = []
+    pos = 0
+    while True:
+        i = text.find("<", pos)
+        if i < 0:
+            break
+        j = text.find(">", i + 1)
+        if j < 0:
+            break
+        out.append(text[pos:i])
+        pos = j + 1
+    return "".join(out) + text[pos:]
+
+
+_OPENING = re.compile(r"<(script|style)\b", re.I | re.A)
+_CLOSING = {name: re.compile(f"</{name}[{JS_SPACE_CLASS}]*>", re.I | re.A) for name in ("script", "style")}
+
+
+def _strip_script_and_style(source: str) -> str:
+    """script and style elements removed, in one pass: what the expression
+    ``<(script|style)\\b[^>]*>[\\s\\S]*?</\\1\\s*>`` (case-insensitive) removes."""
+    none = {"script": False, "style": False}
+    gt = forward_finder(source, ">")
+    out: list[str] = []
+    pos = 0
+    while True:
+        m = _OPENING.search(source, pos)
+        if m is None:
+            break
+        name = m[1].lower()
+        tag_end = gt(m.end())
+        if tag_end < 0:
+            break
+        end = -1
+        if not none[name]:
+            closed = _CLOSING[name].search(source, tag_end + 1)
+            end = closed.end() if closed else -1
+            if end < 0:
+                none[name] = True
+        if end < 0:
+            # Not closed: the opening tag stays, and the search goes on after its name.
+            if none["script"] and none["style"]:
+                break
+            out.append(source[pos : m.end()])
+            pos = m.end()
+            continue
+        out.append(source[pos : m.start()])
+        pos = end
+    return "".join(out) + source[pos:]
+
+
 def markdown_text(source: str) -> str:
     """Markdown to text: images and links become their text; heading and list markers go; *, _ and ` go."""
-    text = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", source)
+    text = _link_text(source)
     lines = [
         re.sub(
             r"^[\t\n\v\f\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]*(?:[-*+]|[0-9]+[.)])[\t\n\v\f\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]+",
@@ -63,13 +176,7 @@ def markdown_text(source: str) -> str:
 
 def html_text(source: str) -> str:
     """HTML to text: script and style elements removed, tags removed, entities decoded."""
-    without = re.sub(
-        r"<(script|style)\b[^>]*>[\s\S]*?</\1[\t\n\v\f\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]*>",
-        "",
-        source,
-        flags=re.I | re.A,
-    )
-    return _decode_entities(re.sub(r"<[^>]*>", "", without))
+    return _decode_entities(strip_tags(_strip_script_and_style(source)))
 
 
 def _number(text: str) -> float:
@@ -107,7 +214,7 @@ def webvtt(source: str) -> tuple[list[Cue], str]:
         start_text, _, rest = lines[at].partition("-->")
         start = _seconds(start_text)
         end = _seconds((js_split_ws(rest) or [""])[0])
-        text = "\n".join(_decode_entities(re.sub(r"<[^>]*>", "", line)) for line in lines[at + 1 :])
+        text = "\n".join(_decode_entities(strip_tags(line)) for line in lines[at + 1 :])
         if math.isfinite(start) and math.isfinite(end):
             cues.append(Cue(start, end, text))
     return cues, "\n".join(c.text for c in cues)
@@ -158,16 +265,183 @@ def selector_matches(selector: Any, text: str) -> bool | None:
     return None
 
 
-def check_selector(selector: dict[str, Any], raw: str, kind: str, prepared: str | None = None) -> bool | None:
-    """Checks one selector against a source's raw text; None when it cannot be checked against this source."""
+def is_media_time_range(selector: Any) -> bool:
+    """A FragmentSelector that conforms to Media Fragments: a time range in audio or video."""
+    if not isinstance(selector, dict) or selector.get("type") != "FragmentSelector":
+        return False
+    conforms = selector.get("conformsTo")
+    return bool(_MEDIA_FRAGMENTS.match(conforms if isinstance(conforms, str) else ""))
+
+
+# Contract §7: in a refined quote, each run of these characters counts as one space.
+_QUOTE_SPACE = re.compile(r"[\t\n\f\r ]+")
+_SPACE_CHARS = frozenset("\t\n\f\r ")
+
+
+def _js_number(x: float) -> float | int:
+    """A whole number as an int, so JSON writes it as JavaScript does."""
+    return int(x) if float(x).is_integer() else x
+
+
+def occurrences(text: str, needle: str) -> list[int]:
+    """Every start index of ``needle`` in ``text``, overlapping ones included, in one linear pass (Knuth-Morris-Pratt)."""
+    m = len(needle)
+    if m == 0:
+        return []
+    fail = [0] * m
+    k = 0
+    for i in range(1, m):
+        while k > 0 and needle[i] != needle[k]:
+            k = fail[k - 1]
+        if needle[i] == needle[k]:
+            k += 1
+        fail[i] = k
+    out: list[int] = []
+    k = 0
+    for i, ch in enumerate(text):
+        while k > 0 and ch != needle[k]:
+            k = fail[k - 1]
+        if ch == needle[k]:
+            k += 1
+        if k == m:
+            out.append(i - m + 1)
+            k = fail[k - 1]
+    return out
+
+
+def _sparse_table(values: list[float], pick: Callable[[float, float], float]) -> Callable[[int, int], float]:
+    """A range-minimum (or maximum) table: query(lo, hi) over values[lo..hi] in O(1)."""
+    levels = [values]
+    w = 1
+    while 2 * w <= len(values):
+        prev = levels[-1]
+        levels.append([pick(prev[i], prev[i + w]) for i in range(len(prev) - w)])
+        w *= 2
+
+    def query(lo: int, hi: int) -> float:
+        k = (hi - lo + 1).bit_length() - 1
+        return pick(levels[k][lo], levels[k][hi - (1 << k) + 1])
+
+    return query
+
+
+def locate_quote(cues: list[Cue], window: tuple[float, float], quote: dict[str, Any]) -> tuple[float, float] | None:
+    """Contract §7: where a refining quote is spoken in a time range.
+
+    The covered text is the payloads of the cues the range overlaps, in file order, joined with LF, with each run of
+    white space (the five ASCII characters) as one space, the quote's parts too. A cue is touched when a non-space
+    character of ``exact`` comes from it. Of every occurrence, the one whose touched cues span the shortest time wins,
+    the earliest on a tie. Returns the earliest start and the latest end of the touched cues, or None when the quote
+    is not in the covered text. Contract §3: linear in the covered text and the quote.
+    """
+    if not isinstance(quote.get("exact"), str):
+        return None
+
+    def part(v: Any) -> str:
+        return _QUOTE_SPACE.sub(" ", v) if isinstance(v, str) else ""
+
+    exact = part(quote["exact"])
+    if all(ch in _SPACE_CHARS for ch in exact):
+        return None
+    prefix = part(quote.get("prefix"))
+    needle = prefix + exact + part(quote.get("suffix"))
+    covered = [c for c in cues if window[0] < c.end and window[1] > c.start]
+    chars: list[str] = []
+    owner: list[int] = []
+    for i, c in enumerate(covered):
+        for ch in ("\n" if i > 0 else "") + c.text:
+            if ch in _SPACE_CHARS:
+                if owner and owner[-1] == -1:
+                    continue
+                chars.append(" ")
+                owner.append(-1)
+            else:
+                chars.append(ch)
+                owner.append(i)
+    text = "".join(chars)
+    n = len(owner)
+    # The owner of the first non-space character at or after each position, and of the last at or before it.
+    nxt = [-1] * (n + 1)
+    for i in range(n - 1, -1, -1):
+        nxt[i] = owner[i] if owner[i] >= 0 else nxt[i + 1]
+    prv = [-1] * n
+    for i in range(n):
+        prv[i] = owner[i] if owner[i] >= 0 else (prv[i - 1] if i > 0 else -1)
+    # Cues with text, in order: the touched cues of a span are those between its first and last owner.
+    rank = [-1] * len(covered)
+    filled: list[int] = []
+    for o in owner:
+        if o >= 0 and rank[o] < 0:
+            rank[o] = len(filled)
+            filled.append(o)
+    if not filled:
+        return None
+    earliest = _sparse_table([covered[c].start for c in filled], min)
+    latest = _sparse_table([covered[c].end for c in filled], max)
+    best: tuple[float, float] | None = None
+    for at in occurrences(text, needle):
+        a = at + len(prefix)
+        b = a + len(exact)
+        first, last = nxt[a], prv[b - 1]
+        if first < 0 or last < 0 or rank[first] > rank[last]:
+            continue
+        span = (earliest(rank[first], rank[last]), latest(rank[first], rank[last]))
+        if (
+            best is None
+            or span[1] - span[0] < best[1] - best[0]
+            or (span[1] - span[0] == best[1] - best[0] and span[0] < best[0])
+        ):
+            best = span
+    return best
+
+
+def check_selector(
+    selector: dict[str, Any],
+    raw: str,
+    kind: str,
+    prepared: str | None = None,
+    duration: float | None = None,
+    to_reference: Callable[[tuple[float, float]], tuple[float, float] | None] | None = None,
+    report: dict[str, Any] | None = None,
+    cues: list[Cue] | None = None,
+) -> bool | None:
+    """Checks one selector against a source's raw text; None when it cannot be checked against this source.
+
+    ``cues`` are the source's WebVTT cues, when the caller has parsed them already.
+    """
     if selector.get("type") == "FragmentSelector":
         conforms = selector.get("conformsTo")
         if not _MEDIA_FRAGMENTS.match(conforms if isinstance(conforms, str) else "") or kind != "webvtt":
             return None
-        window = media_time_range(selector.get("value"))
+        parsed = media_time_range(selector.get("value"))
+        # Package spec §5.7: a range on an alternate is checked on its reference's timeline; one that does not map fails.
+        window = to_reference(parsed) if parsed is not None and to_reference is not None else parsed
         if window is None:
             return False
-        return any(window[0] < c.end and window[1] > c.start for c in webvtt(raw)[0])
+        if cues is None:
+            cues = webvtt(raw)[0]
+        if not any(window[0] < c.end and window[1] > c.start for c in cues):
+            return False
+        # Contract §7: the range lies within the media, bounded by the latest cue end or the declared duration.
+        if window[1] != float("inf"):
+            bound = max((c.end for c in cues), default=float("-inf"))
+            if duration is not None:
+                bound = max(bound, duration)
+            if window[1] > bound:
+                return False
+        # Contract §7: a range refined by a quote matches only when the quote is in the cues it covers.
+        refined = selector.get("refinedBy")
+        if not isinstance(refined, dict) or refined.get("type") != "TextQuoteSelector":
+            return True
+        located = locate_quote(cues, window, refined)
+        if located is None:
+            return False
+        # On an alternate, back to the cited source's timeline by the stretch's offset.
+        assert parsed is not None
+        offset = parsed[0] - window[0]
+        if report is not None:
+            report["located"] = {"start": _js_number(located[0] + offset), "end": _js_number(located[1] + offset)}
+        return True
     # The quote is normalised as the source is, so markup in either never decides a match.
     quote = _normalise_quote(selector, kind) if selector.get("type") == "TextQuoteSelector" else selector
     return selector_matches(quote, prepared if prepared is not None else normalised_text(raw, kind))

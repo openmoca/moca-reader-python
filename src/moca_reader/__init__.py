@@ -10,6 +10,7 @@
 Names follow the Reader interface (moca-spec spec/moca-reader-interface.md) in Python's style.
 """
 
+from .alternates import map_time
 from .attestations import TrustRoot
 from .backends.dense import DenseBackend, model_mismatch, similarity
 from .backends.hybrid import HybridBackend
@@ -19,6 +20,7 @@ from .citation import CitationRecord, citation_for, passes_default_policy, pick_
 from .codes import CODES
 from .content import ContentNode, Representation
 from .diagnostics import Diagnostic
+from .envelope import bind_envelope_sidecar, is_envelope
 from .evidence_text import selector_matches
 from .library import Library, Overlay
 from .metadata import FLAT_FIELDS, flat_metadata
@@ -33,8 +35,9 @@ from .strategies.diversify import diversify
 from .strategies.ontology_guided import ontology_guided
 from .structure import structure_view
 from .structure_ops import StructureIndex
+from .terms import terms_request
 
-__version__ = "0.6.0"
+__version__ = "0.7.0"
 
 __all__ = [
     "CODES",
@@ -67,11 +70,14 @@ __all__ = [
     "StoreScope",
     "StructureIndex",
     "TrustRoot",
+    "bind_envelope_sidecar",
     "bind_sidecar",
     "citation_for",
     "directory_resolver",
     "diversify",
     "flat_metadata",
+    "is_envelope",
+    "map_time",
     "model_mismatch",
     "ontology_guided",
     "package_state",
@@ -81,4 +87,5 @@ __all__ = [
     "selector_matches",
     "similarity",
     "structure_view",
+    "terms_request",
 ]

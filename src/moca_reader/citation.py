@@ -5,15 +5,17 @@ A citation record is a dict valid against citation-record.schema.json: the same 
 
 from __future__ import annotations
 
+import copy
 import math
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from ._js import effective_window, get, js_string, timestamp, truthy
 from .audience import audience_of
-from .content import ContentNode, Representation
+from .content import ContentNode, Representation, sources_by_id
 from .digest import utf8
 from .reviews import review_status_of
+from .terms import UNSET, rights_of
 
 if TYPE_CHECKING:
     from .reader import PackageResult
@@ -66,6 +68,15 @@ def _date_or_none(value: Any) -> Any:
     return None if math.isnan(timestamp(value)) else value
 
 
+def _generated(value: Any) -> dict[str, str]:
+    """Reader contract §7: ``generated``, with ``model`` kept when it is a non-empty string."""
+    out = _declared(value)
+    model = value.get("model")
+    if isinstance(model, str) and model != "":
+        out["model"] = model
+    return out
+
+
 def _has_actor(entry: Any) -> bool:
     """An OKF ``generated`` or ``verified`` entry that names its actor."""
     return isinstance(entry, dict) and entry.get("by") is not None and js_string(entry["by"]) != ""
@@ -96,12 +107,7 @@ def citation_for(
         *(moca["contested_by"] if isinstance(moca.get("contested_by"), list) else []),
         *(index[1].get(key, []) if index else []),
     ]
-    declared_sources = fm.get("sources")
-    sources: dict[Any, Any] = {}
-    for s in declared_sources if isinstance(declared_sources, list) else []:
-        sid = get(s, "id")
-        if truthy(sid) and isinstance(sid, (str, int, float, bool)):
-            sources[sid] = s
+    sources: dict[Any, Any] = sources_by_id(fm)
 
     package: dict[str, Any] = {
         "id": manifest.get("id"),
@@ -111,6 +117,17 @@ def citation_for(
     }
     if result.signers:
         package["signers"] = list(result.signers)
+    # Attestations §7.1: an issued copy names its original digest and issuers.
+    if result.issued_copy is not None:
+        package["issuedCopy"] = {
+            "originalDigest": result.issued_copy["originalDigest"],
+            "issuers": list(result.issued_copy["issuers"]),
+        }
+    # Package spec §4.12: informative, as written.
+    if result.date_published is not None:
+        package["datePublished"] = result.date_published
+    if result.date_packaged is not None:
+        package["datePackaged"] = result.date_packaged
 
     node_part: dict[str, Any] = {
         "id": f"{js_string(manifest.get('id'))}#{node.path}",
@@ -130,6 +147,28 @@ def citation_for(
         node_part["tags"] = [x for x in fm["tags"] if isinstance(x, str)]
     if rep.sha256:
         node_part["digest"] = f"sha256:{rep.sha256}"
+    if result.issued_copy is not None and rep.file in result.issued_copy["changedFiles"]:
+        node_part["issuedChange"] = True
+    # Package spec §4.12: the node's own date, never the package's; absent when it does not parse.
+    date_published = moca.get("date_published")
+    if isinstance(date_published, str) and _date_or_none(date_published) is not None:
+        node_part["datePublished"] = date_published
+    # Package spec §4.13: the node's own credits, never the package's.
+    if rep.contributors is not None:
+        node_part["contributors"] = copy.deepcopy(rep.contributors)
+    # Contract §7: the node's licence and copyright, from its terms.nodes entry or the package's.
+    terms = result.terms or {}
+    node_part.update(
+        rights_of(
+            terms.get("declared", UNSET),
+            terms.get("problems"),
+            manifest.get("license") if result.distribution is not None else None,
+            node.path,
+        )
+    )
+    # Package spec §5.7: the valid media descriptions, in order.
+    if rep.media:
+        node_part["media"] = [d.to_json() for d in rep.media]
 
     verified = fm.get("verified")
     verified_list = verified if isinstance(verified, list) else [verified] if truthy(verified) else []
@@ -137,7 +176,7 @@ def citation_for(
     trust: dict[str, Any] = {
         "status": fm["status"] if fm.get("status") in ("draft", "stable", "deprecated") else "stable",
         # An entry with no actor (`by`) is dropped rather than reported as "undefined".
-        "generated": _declared(generated) if _has_actor(generated) else None,
+        "generated": _generated(generated) if _has_actor(generated) else None,
         "declaredVerified": [_declared(v) for v in verified_list if _has_actor(v)],
         "attestedReviews": [
             {**_review_json(r), "packageVerified": bool(result.signers)}
@@ -178,9 +217,13 @@ def citation_for(
             entry["selector"] = get(e, "selector")
         if truthy(get(e, "note")):
             entry["note"] = get(e, "note")
-        matched = rep.evidence_checks[i].matched if i < len(rep.evidence_checks) else None
+        check = rep.evidence_checks[i] if i < len(rep.evidence_checks) else None
+        matched = check.matched if check is not None else None
         if matched is not None:
             entry["matched"] = matched
+        # Contract §7: where a refined quote is spoken, cue-precise.
+        if check is not None and check.located is not None:
+            entry["located"] = dict(check.located)
         evidence.append(entry)
 
     record: CitationRecord = {
@@ -210,4 +253,6 @@ def _review_json(review: Any) -> dict[str, Any]:
         out["signer"] = review.signer
     if review.scope is not None:
         out["scope"] = review.scope
+    if getattr(review, "file_changed", False):
+        out["fileChanged"] = True
     return out

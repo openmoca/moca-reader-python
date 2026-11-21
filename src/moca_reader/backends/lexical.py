@@ -42,17 +42,6 @@ class LexicalBackend:
             by_path = {n.path: n for n in result.nodes}
             pid = js_string(result.manifest.get("id"))
 
-            def keep(node: Any, rep: Any, pid: str = pid, digest: Any = result.digest) -> str | None:
-                node_id = f"{pid}#{node.path}"
-                if f"{digest} {node_id}" in excluded:
-                    return None
-                label, invalid = audience_of(node, rep)
-                if not audience_allowed(label, invalid, audiences, filters.get("allowUnlabelled") is True):
-                    return None
-                if concepts and not any(c in concepts for c in rep.concepts or []):
-                    return None
-                return node_id
-
             if p.chunks is not None:
                 for c in p.chunks:
                     node = by_path.get(c["path"])
@@ -63,11 +52,7 @@ class LexicalBackend:
                     )
                     if node is None or rep is None:
                         continue
-                    if locale and pick_representation(node, locale) is not rep:
-                        continue
-                    node_id = keep(node, rep)
-                    if not node_id:
-                        continue
+                    node_id = f"{pid}#{node.path}"
                     key = f"{node_id}\0{js_string(c['start']).rjust(12, '0')}"
                     # The cache key adds the locale: chunks of two representations can start at the same offset.
                     cache_key = f"{key}\0{c.get('locale') or ''}"
@@ -78,14 +63,11 @@ class LexicalBackend:
                     if rep.locale:
                         item["locale"] = rep.locale
                     item["span"] = {"start": c["start"], "end": c["end"]}
-                    docs.append({"item": item, "counts": counted[cache_key], "key": key})
+                    docs.append({"item": (item, node, rep), "counts": counted[cache_key], "key": key})
             else:
                 for node in result.nodes:
-                    reps = [pick_representation(node, locale)] if locale else node.representations
-                    for rep in reps:
-                        node_id = keep(node, rep)
-                        if not node_id:
-                            continue
+                    for rep in node.representations:
+                        node_id = f"{pid}#{node.path}"
                         key = f"{node_id}\0{rep.locale or ''}"
                         if key not in counted:
                             fm = rep.frontmatter
@@ -95,11 +77,29 @@ class LexicalBackend:
                         item = {"digest": result.digest, "node": node_id, "path": node.path}
                         if rep.locale:
                             item["locale"] = rep.locale
-                        docs.append({"item": item, "counts": counted[key], "key": key})
+                        docs.append({"item": (item, node, rep), "counts": counted[key], "key": key})
+        accept = filters.get("accept")
+
+        def passes(item: dict[str, Any], node: Any, rep: Any) -> bool:
+            if f"{item['digest']} {item['node']}" in excluded:
+                return False
+            if locale and pick_representation(node, locale) is not rep:
+                return False
+            label, invalid = audience_of(node, rep)
+            if not audience_allowed(label, invalid, audiences, filters.get("allowUnlabelled") is True):
+                return False
+            if concepts and not any(c in concepts for c in rep.concepts or []):
+                return False
+            return not callable(accept) or bool(accept(item))
+
         seen: set[str] = set()
         out: list[dict[str, Any]] = []
         for hit in bm25_counted(docs, query):
-            item = hit["item"]
+            if len(out) >= limit:
+                break
+            item, node, rep = hit["item"]
+            if not passes(item, node, rep):
+                continue
             if "span" not in item:
                 # Node ids repeat across versions of a package, so key on the digest too.
                 key = f"{item['digest']} {item['node']}"
@@ -107,6 +107,4 @@ class LexicalBackend:
                     continue
                 seen.add(key)
             out.append({**item, "score": hit["score"]})
-            if len(out) >= limit:
-                break
         return out

@@ -9,6 +9,8 @@ from typing import Any
 def review_status_of(reviews: Sequence[Any] | None, signed: bool) -> str:
     """``none``, ``unverified`` (reviews in an unsigned package), ``approved`` (signed, an accurate review and none
     against) or ``disputed`` (signed, and a current review says needs-change or inaccurate)."""
+    # Attestations §7.1: a review of a file an issuer changed never counts.
+    reviews = [r for r in reviews or [] if not getattr(r, "file_changed", False)]
     if not reviews:
         return "none"
     if not signed:

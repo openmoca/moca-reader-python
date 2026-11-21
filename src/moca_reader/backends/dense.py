@@ -29,6 +29,7 @@ class DenseBackend:
         self._checks = Diagnostics()
         self.diagnostics = self._checks.items
         self.checked: dict[str, bool] = {}
+        self._last_query: tuple[str, Any] | None = None
         self._check()
 
     def search(self, query: str, limit: int, filters: dict[str, Any]) -> list[dict[str, Any]]:
@@ -41,7 +42,11 @@ class DenseBackend:
         ]
         if not usable:
             return []
-        q = self.embedder.embed([query], "query")[0]
+        # One embedding per query string, however often a search asks again (contract §9.2).
+        if self._last_query is None or self._last_query[0] != query:
+            self._last_query = (query, self.embedder.embed([query], "query")[0])
+        q = self._last_query[1]
+        accept = filters.get("accept")
         excluded = {f"{x['digest']} {x['node']}" for x in filters.get("exclude") or []}
         audiences, concepts, locale = filters.get("audiences"), filters.get("concepts"), filters.get("locale")
         scored: list[dict[str, Any]] = []
@@ -72,6 +77,8 @@ class DenseBackend:
                 if rep.locale:
                     hit["locale"] = rep.locale
                 hit["span"] = {"start": c["start"], "end": c["end"]}
+                if callable(accept) and not accept(hit):
+                    continue
                 hit["score"] = round_scaled(similarity(distance, q, c["vector"]), 1e4)
                 scored.append(hit)
         scored.sort(key=lambda h: -h["score"])
