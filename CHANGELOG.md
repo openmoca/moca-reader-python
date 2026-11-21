@@ -39,6 +39,42 @@ For moca-spec 0.7.0 ([moca-spec#5](https://github.com/openmoca/moca-spec/issues/
   unless the app declares `destination="device"` or `"host"`; `conditions` and `terms` (a rating request, say) add
   to it.
 
+### Added (what the terms gate covers: Reader contract §9.4, §10, §15.3–15.4; moca-spec ADR-0041)
+
+Everything a Reader hands to a model now goes through the creator's terms: records, structure labels and
+definitions, text sent for embedding, and what is said about packages.
+
+- `ai.allowed.mention`: whether a model that may not receive a work may be told it exists. Platform default
+  `true`; it resolves like every `allowed.*` field, so the stricter value applies whatever its authority. Package
+  level only: in a `nodes` entry it is `U003` and has no effect. A malformed value or container fails closed.
+- Closed and hidden: a package is closed for a request when its package-level resolved terms fail the `ai` test
+  for the request's destination and conditions (`closedBy` names the reason); it is hidden when it is closed and its
+  `mention` is `false`. A use never closes a package. `moca_reader.terms.closure_of`; `moca_reader.terms_gate`
+  holds the view that search, ingest, the structure operations and the catalogue share.
+- `Library.catalogue(terms, audiences=, allow_unlabelled=, include_all=, terms_limits=)`: what a model may be told
+  about the loaded packages. An open package's entry has its id, version, title, description, publisher's name,
+  `signed`, tags and the members that have their own entry; a closed one's has exactly `id`, `version`, `title`,
+  `publisher`, `signed` and `closedBy`. A hidden package, one outside the audience set or the default retrieval
+  policy, and one whose own rating the request's rating gate removes have no entry.
+- `Library.structure_for(terms, terms_limits)`: the structure operations over the packages not closed for the
+  request, and the overlays.
+- `MemoryStoreBackend.ingest(library, terms=, terms_limits=)`: with a terms request (`{"destination",
+  "conditions"}`, the use `embed`), units the gate removes are never sent to the embedder or stored, and
+  `ingest_diagnostics` holds `U004`. Without one, every unit is ingested, as before. `ingest_terms(destination,
+  conditions)` builds the request.
+- `U004_TERMS_EXCLUDED` carries `excluded` (removed records by reason) and `hidden` (how many came from hidden
+  packages). In a record from a search with a terms request, `trust.supersededBy` and `trust.contestedBy` leave out
+  ids of hidden packages.
+- `Library.search` takes `terms` and `terms_limits`, as `Search` does.
+- The LangChain and LlamaIndex packages: `ingest(store, library, destination=, conditions=, terms_limits=)` always
+  passes a terms request, `provider` unless the app declares `device` or `host`. `terms_request` refuses an `ai`
+  part that is not an object, so a retriever never searches without one.
+- Vendored `terms.schema.json`, `citation-record.schema.json` and the new `catalogue-entry.schema.json`.
+- The conformance adapter supports `options.ingestTerms`, `options.terms` on structure cases, `termsExcluded` and the
+  `catalogue` case kind.
+- Content embedded before this version may include text a creator closed to your embedder's destination. Re-ingest
+  with a terms request, or remove those packages' records (`MemoryStoreBackend.remove(digest)`).
+
 ### Changed (moca-spec 0.7.0)
 
 - Search de-duplication is keyed on the node, the locale and the whole span, start and end (contract §9.2).
