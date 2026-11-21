@@ -9,6 +9,60 @@ For moca-spec 0.7.0 ([moca-spec#5](https://github.com/openmoca/moca-spec/issues/
 [moca-spec#8](https://github.com/openmoca/moca-spec/issues/8) and
 [moca-spec#9](https://github.com/openmoca/moca-spec/issues/9)).
 
+### Added (creators' terms: package spec §4.14, Reader contract §15)
+
+- `PackageResult.terms`: the manifest's `terms` exactly as written (`declared`), their problems with each field's path
+  (`problems`), and `authority`: `packager` when a package attestation verifies, otherwise `unverified`, never from
+  fields the signer writes. Defaults are never filled in. Terms problems are warnings and the package stays valid:
+  `U001_TERMS_INVALID`, `U003_TERMS_UNKNOWN_VALUE`, and `U002_TERMS_LOOSENED` for a `nodes` entry looser than the
+  package.
+- Resolving: platform, package, node, composite, host; a level applies only when it is as strict or stricter, and
+  each resolved field records the level that decided it (`decidedBy`). A malformed or unknown value, and a malformed
+  container (`ai`, `ai.allowed`, `rights`, `rights.export`, `nodes` or one of its entries), count as the strictest.
+  A composing package's terms apply to a member only when its signers' ids cover the member id, as for `upTo`, or
+  the host allows unsigned relations.
+- The terms gate: `Search(terms_limits=...)` (the host's floors) and `search(terms=...)` (the host's request:
+  `ai` with `destination`, `conditions` and `use`; `rating` with `explicit`, `schemes`, `allowUnrated` and
+  `acceptFeedRatings`). Without a request, terms remove nothing. With one, records the terms do not allow are
+  removed and counted by reason in `U004_TERMS_EXCLUDED` (info), and kept records carry `terms`: the authority,
+  the resolved `ai` fields, the rating, and `rights.export`. A rating request with a member this version does not
+  know removes every record. Package states carry `terms`, so a store search applies them too.
+- Rights: `rights.export.allowed` resolves from the package and its composites (platform default true);
+  citation records carry `node.license` and `node.copyright` from the node's `terms.nodes` entry, else the
+  package's (`license`, `terms.rights.copyright`), skipping a value with a terms problem. A copyright year range
+  must not end before it starts (`U001`).
+- `PackageResult.date_packaged` and `package.datePackaged` on records (package spec §4.12, informative).
+- `trust.generated.model` on records, when the node's `generated.model` is a string.
+- The LangChain and LlamaIndex retrievers take `terms`, passed to every search.
+
+### Changed (moca-spec 0.7.0)
+
+- Search de-duplication is keyed on the node, the locale and the whole span, start and end (contract §9.2).
+- `datePackaged` and `terms` are known manifest members (no `M004`); a manifest that is JSON but not an object is
+  `M002`, and nothing more is read.
+- Vendored schemas match moca-spec 0.7.0, including the new `terms.schema.json`.
+
+### Security (moca-spec 0.7.0 hardening, Reader contract §3, attestations §6–§7)
+
+- Zip archives: exactly one end-of-central-directory record ending the file; no Zip64 or multi-disk archives; a
+  central directory that holds what it declares; local headers where the directory says, with the same name and
+  method. Otherwise `T003`. Names come from the central directory; the Info-ZIP Unicode path extra field is ignored.
+  An entry `zipfile` cannot read, such as an encrypted one, is `P002`. An archive read by path is read into memory
+  once and its file closed.
+- Signer binding: a trust-root entry with `ids` signs only the packages those ids cover; otherwise
+  `A010_SIGNER_NOT_FOR_PACKAGE` and the package is not signed by it.
+- At most 256 attestation files of at most 1 MiB each (`maxAttestations`, `maxAttestationBytes`) and 16 signature
+  entries per envelope; over either, `A001`.
+- `structure.ttl`: each member list is walked once, and the cells reached from every `skos:memberList` count toward
+  `maxTriples` (`O001`).
+- Malformed input is reported, never raised: JSON and frontmatter nested more than 128 levels deep are malformed;
+  numeric character references of any length are read; dates within a day of year 1 or 9999 are read; an envelope
+  entry that cannot be read is `P002`, a sidecar entry `S001`.
+- Linear scans of package text: Markdown link targets, the Markdown and HTML evidence normalisers and WebVTT cue
+  tags no longer take time growing with the square of a line's or a source's length.
+- Directory sources never follow a symbolic link at any step of a path, including one swapped in after listing.
+- Frontmatter tags outside the YAML 1.2 core schema are refused (`C002`).
+
 ### Added (credits: package spec §4.13)
 
 - `PackageResult.publisher`, `url` and `contributors`, as written, when the package is valid; citation records carry

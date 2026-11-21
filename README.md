@@ -44,9 +44,9 @@ same JSON every MOCA Reader produces (`citation-record.schema.json`).
 
 | Name | Purpose |
 | --- | --- |
-| `read_package(target, *, trust_root, resolve_member, strict, limits, known_profiles, now)` | Read and check a package: a path, a `.moca`/`.zip` path, archive bytes (`bytes`, `bytearray` or `memoryview`, read in place: do not change them during the read), or a host source with `list()` and `read(path)`. |
+| `read_package(target, *, trust_root, resolve_member, strict, limits, known_profiles, now)` | Read and check a package: a path, a `.moca`/`.zip` path, archive bytes (`bytes`, `bytearray` or `memoryview`, read in place: do not change them during the read), or a host source with `list()` and `read(path)`. The result's `terms` holds the creator's terms as written, their problems and their authority (contract §15.1). |
 | `Library(clock=, overlays=, limits=)` | Holds verified packages, with bound sidecar chunks: `add`, `citations`, `get`, `search`, `structure`. |
-| `Search(source, backend, audiences=, hooks=)` | One entry point over a backend: `search(query, limit=, include_all=, locale=, concepts=, scope=)`. The gate always runs last. `source` is a `Library`, or a `StoreScope(package_states, clock)` for a store backend: `package_state(result)` for each loaded package, so every library- and trust-dependent field is recomputed (contract §9.4). |
+| `Search(source, backend, audiences=, hooks=, max_candidates=, terms_limits=)` | One entry point over a backend: `search(query, limit=, include_all=, locale=, concepts=, scope=, up_to=, terms=)`. The gate always runs last. `terms` is the host's terms request (contract §15.4): with it, the gate also removes records whose creator's terms do not allow the use, and each record carries its resolved terms; without it, terms remove nothing. `terms_limits` are the host's own floors. `source` is a `Library`, or a `StoreScope(package_states, clock)` for a store backend: `package_state(result)` for each loaded package, so every library- and trust-dependent field is recomputed (contract §9.4). |
 | `map_time(record, from_source, to_source, t)` | The same moment on another media description of the record's node: switch between the audio and video versions of an episode (package spec §5.7). `None` when it is not there. |
 | `LexicalBackend`, `DenseBackend`, `MemoryStoreBackend`, `HybridBackend` | BM25 over package text or sidecar chunks; sidecar vectors with a host embedder (`S006`, `S007`); a reference in-memory store; Reciprocal Rank Fusion of a lexical and a dense backend. |
 | `Embedder` | The protocol a host embedder follows: `name`, `version`, `dimensions`, `query_prefix`, `document_prefix`, `embed(texts, role)`. |
@@ -124,7 +124,8 @@ asks:
 | --- | --- |
 | Class | Reader |
 | Contract version | 0.7.0 |
-| Implemented | Archives, host sources, DSSE attestations, sidecars (lexical and dense), the ontology profile |
+| Implemented | Archives, host sources, DSSE attestations, sidecars (lexical and dense), the ontology profile, creators' terms and the terms gate |
+| Limits | The contract §3 defaults (`moca_reader.source.DEFAULT_LIMITS`, set with `limits=`), with at most 256 attestation files of 1 MiB each. JSON and frontmatter nested more than 128 levels deep are malformed |
 | Encryption | `read_package(..., decryptor=AGE_DECRYPTOR, key_provider=...)`, with `AGE_DECRYPTOR` from `moca_reader.age` (on `cryptography`, already a dependency). Without a decryptor, an envelope is recognised and reported with `E001`, and nothing inside it is exposed. `bind_envelope_sidecar` opens an envelope's `index.age` the same way. Decrypted bytes stay in memory, and are zeroed once read, so an opened envelope's `result.source` is `None` |
 | Sigstore | Offline only, with the `sigstore` extra (`pip install moca-reader[sigstore]`), against the host trust root's `sigstore.trustedRoot`. Without the extra, or without a trusted root, a `*.sigstore.json` attestation is unverifiable (`A003`). There is no online mode: refresh the trusted root yourself (moca-spec attestations §6) |
 
@@ -173,6 +174,31 @@ node tests/parity/parity.mjs
    publishing: `moca-reader` first, then its bindings, which release at the
    same version. No PyPI token is kept anywhere.
 5. Publish a GitHub release whose notes are the changelog section.
+
+## Standards
+
+What this Reader uses, and how strongly. **Follow** means we implement it and
+the tests check it where they can; **map to** means only an informative
+mapping, in the specification.
+
+| Standard | Where | How strongly |
+| --- | --- | --- |
+| [Open Knowledge Format](https://github.com/GoogleCloudPlatform/open-knowledge-format/blob/ad30107c31c06aec8a7d5636e0d1058118604e6f/SPEC.md) v0.2, pinned at commit `ad30107` | `content/` is an OKF bundle | follow (pinned) |
+| [YAML 1.2](https://yaml.org/spec/1.2.2/), core schema | frontmatter; aliases and tags outside the core schema are refused | follow |
+| [JSON Schema 2020-12](https://json-schema.org/draft/2020-12) | the vendored schemas, byte-identical to moca-spec's | follow |
+| [Ed25519](https://www.rfc-editor.org/rfc/rfc8032) (RFC 8032) and [in-toto Statement v1](https://github.com/in-toto/attestation) in DSSE envelopes | package and review attestations | follow |
+| [Sigstore](https://www.sigstore.dev/) bundles | the `sigstore` extra: offline only; issuer and subject compared exactly | follow |
+| [age v1](https://age-encryption.org/v1) (X25519 and scrypt recipients) | `moca_reader.age`: encrypted packages, decrypt only | follow |
+| [SKOS](https://www.w3.org/TR/skos-reference/) and [Dublin Core terms](https://www.dublincore.org/specifications/dublin-core/dcmi-terms/) in RDF 1.1 Turtle | `structure.ttl` | follow (the named terms) |
+| [WebVTT](https://www.w3.org/TR/webvtt1/) | transcripts that evidence cites | follow |
+| [BCP 47](https://www.rfc-editor.org/info/bcp47) | `language`, `locales`, search locales | follow |
+| [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339) | dates, validity windows, `datePackaged` | follow |
+| [SPDX licence expressions](https://spdx.org/licenses/) | `license`, and a node's licence in citation records | follow (exposed as written) |
+| [MARC relator codes](https://id.loc.gov/vocabulary/relators.html) | credit `roles` | follow (exposed as written) |
+| [schema.org](https://schema.org/) | `datePublished`, `contentRating`, `typicalAgeRange`, copyright | map to |
+| [ONNX](https://onnx.ai/) via ONNX Runtime | the `onnx` extra: the standard embedding models | follow |
+
+Built with the help of AI assistants; every change is reviewed and accepted by the maintainer.
 
 ## Licence
 
