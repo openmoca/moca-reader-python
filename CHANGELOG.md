@@ -72,6 +72,10 @@ For moca-spec 0.7.0 ([moca-spec#5](https://github.com/openmoca/moca-spec/issues/
   error no check foresaw while reading a member leaves that member unresolved with one `R001`, and one while
   reading the package ends the read with one `P002`; `read_package` returns a result in both cases.
 - JSON nesting check: one pass. The check before each JSON parse looks at each character once.
+- Structure: nesting is limited to 64 levels, fixed. Each blank-node property list or collection in `structure.ttl`
+  (and a host overlay) is one level, counted by the Turtle parser itself as it reads, so a bracket in an IRI, a
+  string, a comment or a name never counts. Past the limit the file is `O001`. The parse runs on a thread of its
+  own, so whether 64 levels are read never depends on the caller's stack.
 
 ### Added (credits: package spec §4.13)
 
