@@ -128,6 +128,12 @@ def concept_item(x: dict[str, Any] | None) -> dict[str, Any] | None:
     return out
 
 
+def terms_excluded_of(diagnostics: list[Any]) -> dict[str, Any] | None:
+    """Contract §15.4: the search's U004 counts, ``{"excluded", "hidden"}``, or None when it has none."""
+    u = next((d for d in diagnostics if d.code == "U004_TERMS_EXCLUDED"), None)
+    return None if u is None else {"excluded": u.excluded or {}, "hidden": u.hidden or 0}
+
+
 def actual_for(root: str, c: dict[str, Any]) -> dict[str, Any]:
     o = c.get("options") or {}
     read_options: dict[str, Any] = {
@@ -257,7 +263,7 @@ def actual_for(root: str, c: dict[str, Any]) -> dict[str, Any]:
             )
             records = store_search.search(s["query"], **options)
             codes.extend(d.code for d in store_search.diagnostics)
-            return {"codes": codes, "records": records}
+            return {"codes": codes, "records": records, "termsExcluded": terms_excluded_of(store_search.diagnostics)}
 
         def dense() -> DenseBackend:
             return DenseBackend(library, ConformanceEmbedder(o["embedder"]))
@@ -286,7 +292,7 @@ def actual_for(root: str, c: dict[str, Any]) -> dict[str, Any]:
         records = search.search(s["query"], **options)
         # Contract §9: the search's own findings, such as S008.
         codes.extend(d.code for d in search.diagnostics)
-        return {"codes": codes, "records": records}
+        return {"codes": codes, "records": records, "termsExcluded": terms_excluded_of(search.diagnostics)}
 
     result = read_package(os.path.join(root, c["target"]), **read_options)
     codes = [d.code for d in result.diagnostics]

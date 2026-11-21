@@ -347,6 +347,49 @@ def test_the_terms_gate_in_a_search(tmp_path: Path) -> None:
     assert floored.search("refunds", limit=10, terms={"ai": {"destination": "provider"}}) == []
 
 
+def _versions(tmp_path: Path, mention: bool) -> Library:
+    """Version 2 supersedes version 1 and is closed for a provider; hidden too unless ``mention``."""
+    ai: dict[str, Any] = {"allowed": {"provider": False, **({} if mention else {"mention": False})}}
+    v1 = read_package(package(tmp_path / "v1", {"title": "One"}, {"content/a.md": NODE.format(title="A")}))
+    v2_manifest = {
+        "version": "2.0.0",
+        "title": "Two",
+        "terms": {"ai": ai},
+        "relations": [{"type": "supersedes", "target": "https://example.com/t", "version": "1.0.0"}],
+    }
+    v2 = read_package(package(tmp_path / "v2", v2_manifest, {"content/a.md": NODE.format(title="A")}))
+    return Library(clock=lambda: NOW, allow_unsigned_relations=True).add(v1).add(v2)
+
+
+def test_u004_counts_records_by_reason_and_those_from_hidden_packages(tmp_path: Path) -> None:
+    library = _versions(tmp_path, mention=False)
+    search = Search(library, LexicalBackend(library))
+    records = search.search("refunds", limit=10, include_all=True, terms={"ai": {"destination": "provider"}})
+    assert [r["package"]["version"] for r in records] == ["1.0.0"]
+    [u004] = search.diagnostics
+    assert (u004.code, u004.excluded, u004.hidden) == ("U004_TERMS_EXCLUDED", {"ai.allowed.provider": 1}, 1)
+    assert u004.to_json()["excluded"] == {"ai.allowed.provider": 1} and u004.to_json()["hidden"] == 1
+    # A closed package that may be mentioned is not hidden.
+    named = _versions(tmp_path / "named", mention=True)
+    search = Search(named, LexicalBackend(named))
+    search.search("refunds", limit=10, include_all=True, terms={"ai": {"destination": "provider"}})
+    assert search.diagnostics[0].hidden == 0
+
+
+def test_superseded_by_names_no_hidden_package(tmp_path: Path) -> None:
+    request = {"ai": {"destination": "provider"}}
+    for mention, named in ((False, None), (True, ["https://example.com/t@2.0.0"])):
+        library = _versions(tmp_path / str(mention), mention)
+        [v1] = Search(library, LexicalBackend(library)).search("refunds", limit=10, include_all=True, terms=request)
+        assert v1["trust"]["superseded"] is True
+        assert v1["trust"].get("supersededBy") == named
+        # Without a terms request nothing is left out.
+        plain = Search(library, LexicalBackend(library)).search("refunds", limit=10, include_all=True)
+        assert next(r for r in plain if r["package"]["version"] == "1.0.0")["trust"]["supersededBy"] == [
+            "https://example.com/t@2.0.0"
+        ]
+
+
 def test_de_duplication_keeps_spans_that_differ_only_in_their_end(tmp_path: Path) -> None:
     result = read_package(package(tmp_path / "p", {"title": "T"}, {"content/a.md": NODE.format(title="A")}))
     library = Library(clock=lambda: NOW).add(result)
