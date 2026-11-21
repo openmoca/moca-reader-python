@@ -262,13 +262,33 @@ class Library:
         up_to: str | None = None,
         audiences: list[str] | None = None,
         allow_unlabelled: bool = False,
+        terms: dict[str, Any] | None = None,
+        terms_limits: dict[str, Any] | None = None,
     ) -> list[CitationRecord]:
-        """Lexical search over the loaded packages; a shortcut for ``Search(library, LexicalBackend(library))``."""
+        """Lexical search over the loaded packages; a shortcut for ``Search(library, LexicalBackend(library))``.
+
+        ``terms`` is the host's terms request and ``terms_limits`` its own ``ai`` values (contract §15.4), as for
+        ``Search``: without a request, terms remove nothing. A host that hands the records to a model passes one
+        (``terms_request``)."""
         from .backends.lexical import LexicalBackend
         from .search import Search
 
-        return Search(self, LexicalBackend(self), audiences=audiences, allow_unlabelled=allow_unlabelled).search(
-            query, limit=limit, include_all=include_all, locale=locale, concepts=concepts, scope=scope, up_to=up_to
+        search = Search(
+            self,
+            LexicalBackend(self),
+            audiences=audiences,
+            allow_unlabelled=allow_unlabelled,
+            terms_limits=terms_limits,
+        )
+        return search.search(
+            query,
+            limit=limit,
+            include_all=include_all,
+            locale=locale,
+            concepts=concepts,
+            scope=scope,
+            up_to=up_to,
+            terms=terms,
         )
 
 

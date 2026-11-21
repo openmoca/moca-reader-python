@@ -416,3 +416,19 @@ def test_terms_request_for_an_app_that_hands_records_to_a_model() -> None:
     assert terms_request(terms=own) == own
     with pytest.raises(ValueError, match="destination"):
         terms_request("moon")
+    # A binding never hands content on without an ai part: an ai that is not an object is refused.
+    for dropped in (None, False, [], "none"):
+        with pytest.raises(ValueError, match="must be an object"):
+            terms_request(terms={"ai": dropped})
+
+
+def test_library_search_takes_a_terms_request_and_limits(tmp_path: Path) -> None:
+    terms = {"ai": {"allowed": {"provider": False}}}
+    result = read_package(
+        package(tmp_path / "p", {"title": "T", "terms": terms}, {"content/a.md": NODE.format(title="A")})
+    )
+    library = Library(clock=lambda: NOW).add(result)
+    assert len(library.search("refunds")) == 1
+    assert library.search("refunds", terms=terms_request()) == []
+    assert len(library.search("refunds", terms=terms_request("host"))) == 1
+    assert library.search("refunds", terms=terms_request("host"), terms_limits={"allowed": {"host": False}}) == []

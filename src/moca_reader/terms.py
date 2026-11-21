@@ -528,10 +528,23 @@ def terms_request(
     """A terms request (contract §15.4) for an app that hands records to a model: ``ai`` with the destination the
     app declares (``provider``, a third party's model, unless it declares ``device`` or ``host``) and the provider
     conditions it meets, plus anything else in ``terms`` (a ``rating`` request, say). An ``ai`` in ``terms`` is used
-    as it is. Used by the framework bindings, which apply it to every search."""
+    as it is, and must be an object: a binding a model calls never hands content on without an ``ai`` part (contract
+    §15.4), so ``destination`` is the way to choose where the model runs. Used by the framework bindings, which apply
+    it to every search."""
     if destination not in DESTINATIONS:
         raise ValueError(f"destination must be one of {', '.join(DESTINATIONS)}, not {destination!r}")
+    if terms is not None and "ai" in terms and not isinstance(terms["ai"], dict):
+        raise ValueError("terms['ai'] must be an object; set destination to choose where the model runs")
     request = copy.deepcopy(dict(terms or {}))
     listed = list(conditions or [])
     request.setdefault("ai", {"destination": destination, **({"conditions": listed} if listed else {})})
     return request
+
+
+def ingest_terms(destination: str = "provider", conditions: Iterable[str] | None = None) -> dict[str, Any]:
+    """An ingest's terms request (contract §9.4): ``{"destination", "conditions"}``, where the host's embedder runs
+    (``provider``, a third party's model, unless it declares ``device`` or ``host``) and the provider conditions it
+    meets. Used by the framework bindings, which pass it to every ingest."""
+    if destination not in DESTINATIONS:
+        raise ValueError(f"destination must be one of {', '.join(DESTINATIONS)}, not {destination!r}")
+    return {"destination": destination, "conditions": list(conditions or [])}

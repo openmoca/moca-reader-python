@@ -35,7 +35,7 @@ from .strategies.diversify import diversify
 from .strategies.ontology_guided import ontology_guided
 from .structure import structure_view
 from .structure_ops import StructureIndex
-from .terms import terms_request
+from .terms import ingest_terms, terms_request
 
 __version__ = "0.7.0"
 
@@ -76,6 +76,7 @@ __all__ = [
     "directory_resolver",
     "diversify",
     "flat_metadata",
+    "ingest_terms",
     "is_envelope",
     "map_time",
     "model_mismatch",
