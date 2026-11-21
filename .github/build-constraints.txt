@@ -1,0 +1,8 @@
+# The build backend and its dependencies, pinned exactly for the release build (release.yml: uv build
+# --build-constraints). To update: echo "hatchling==X.Y.Z" | uv pip compile - --no-header --no-annotate
+hatchling==1.33.0
+packaging==26.3
+pathspec==1.1.1
+pluggy==1.7.0
+tomlkit==0.15.2
+trove-classifiers==2026.9.21.13
