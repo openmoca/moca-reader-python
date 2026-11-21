@@ -417,8 +417,21 @@ def _read_attestations(
         p for p in data if p.startswith(f"{ATTESTATIONS_DIR}/") and re.search(r"\.(dsse|sigstore)\.json\Z", p)
     )
     pending: list[tuple[str, ParsedAttestation, str, dict[str, Any]]] = []
+    # Contract §3: attestation files are bounded in number and in size, so verifying them is bounded work.
+    max_files, max_bytes = options.limits["maxAttestations"], options.limits["maxAttestationBytes"]
+    if len(attestation_files) > max_files:
+        diagnostics.add(
+            "A001_ATTESTATION_MALFORMED",
+            f"the package has {len(attestation_files)} attestation files, over the {max_files} limit; none is read",
+            ATTESTATIONS_DIR,
+        )
+        return
     for file in attestation_files:
-        parsed = parse_attestation(file, data[file])
+        parsed = (
+            f"larger than the {max_bytes}-byte limit for an attestation file"
+            if len(data[file]) > max_bytes
+            else parse_attestation(file, data[file])
+        )
         if isinstance(parsed, str):
             diagnostics.add("A001_ATTESTATION_MALFORMED", parsed, file)
             result.attestations.append({"file": file, "outcome": "malformed", "reason": parsed})
@@ -492,6 +505,17 @@ def _read_attestations(
                 diagnostics.add(
                     "A008_PACKAGE_DIGEST_MISMATCH" if tampered else "A002_ATTESTATION_INVALID",
                     f"package attestation does not match this package: {mismatch}",
+                    file,
+                )
+            elif sig.scoped and not scope_covers(sig.ids, get(manifest, "id")):
+                # Attestations §6: a signer with `ids` signs only the packages those ids cover. The signature is
+                # good, but this signer may not speak for this id, so the package is not signed by it.
+                record["outcome"] = "invalid"
+                record["reason"] = f"the signer's ids in the trust root do not cover {get(manifest, 'id')}"
+                diagnostics.add(
+                    "A010_SIGNER_NOT_FOR_PACKAGE",
+                    f"package attestation is signed by {sig.signer}, whose ids in the trust root do not cover "
+                    f"{get(manifest, 'id')}",
                     file,
                 )
             elif sig.signer is not None:

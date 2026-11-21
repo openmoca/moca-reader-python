@@ -116,6 +116,34 @@ def parse_structure(
     def add(fact: Fact) -> None:
         facts.append({**fact, "layer": layer, "origin": origin})
 
+    # Contract §3: a member list is walked once, however many collections name it, and the list cells reached from
+    # every skos:memberList statement, added together, stay within the triple limit.
+    walked: dict[Any, tuple[list[tuple[str, int]], int]] = {}
+
+    def members_of(head: Any) -> tuple[list[tuple[str, int]], int]:
+        """The named members of the list at head, each with its index, and the cells walked."""
+        if not isinstance(head, rdflib.BNode):
+            return [], 0
+        if head in walked:
+            return walked[head]
+        items: list[tuple[str, int]] = []
+        seen: set[Any] = set()
+        node: Any = head
+        index = 0
+        while node is not None and isinstance(node, rdflib.BNode) and node not in seen:
+            seen.add(node)
+            cell = lists.get(node)
+            if not cell or cell.get("first") is None:
+                break
+            if isinstance(cell["first"], rdflib.URIRef):
+                items.append((_iri(cell["first"]), index))
+            node = cell.get("rest")
+            index += 1
+        walked[head] = (items, index)
+        return walked[head]
+
+    cells = 0
+
     for s, p, o in triples:
         if str(p) == f"{OWL}imports":
             diagnostics.add(
@@ -135,18 +163,19 @@ def parse_structure(
                 add({"s": subject, "kind": "collection"})
             continue
         if predicate == f"{SKOS}memberList":
-            node: Any = o
-            seen: set[Any] = set()
-            index = 0
-            while node is not None and isinstance(node, rdflib.BNode) and node not in seen:
-                seen.add(node)
-                cell = lists.get(node)
-                if not cell or cell.get("first") is None:
-                    break
-                if isinstance(cell["first"], rdflib.URIRef):
-                    add({"s": subject, "kind": "member", "o": _iri(cell["first"]), "index": index})
-                node = cell.get("rest")
-                index += 1
+            # A list reached again costs its cells again: a walk that starts part-way down another list is new work.
+            items, walked_cells = members_of(o)
+            cells += max(walked_cells, 1)
+            if cells > limits["maxTriples"]:
+                diagnostics.add(
+                    "O001_ONTOLOGY_UNPARSEABLE",
+                    f"{file} has more than {limits['maxTriples']} collection members, counting each collection's "
+                    "member list in full",
+                    file,
+                )
+                return [], prefixes, False
+            for member, index in items:
+                add({"s": subject, "kind": "member", "o": member, "index": index})
             continue
         known = PREDICATES.get(predicate)
         if not known:
@@ -196,6 +225,7 @@ class StructureGraph:
                 targets[o] = {"layer": f["layer"], "origin": f["origin"]}
 
         members: dict[str, dict[int, str]] = {}
+        member_sets: dict[str, set[str]] = {}
         for f in self.facts:
             kind = f["kind"]
             if kind == "concept":
@@ -216,7 +246,10 @@ class StructureGraph:
                 if kind == "member":
                     c2 = self.collections[f["s"]]
                     slots = members[f["s"]]
-                    if c2["origin"] == f["origin"] and f["o"] not in slots.values():
+                    # The members a collection already has, so adding one is constant work however long the list is.
+                    held = member_sets.setdefault(f["s"], set())
+                    if c2["origin"] == f["origin"] and f["o"] not in held:
+                        held.add(f["o"])
                         slots[f["index"]] = f["o"]
             elif kind == "label":
                 c = concept(f["s"])

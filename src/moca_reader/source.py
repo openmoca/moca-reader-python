@@ -39,6 +39,9 @@ DEFAULT_LIMITS: dict[str, int] = {
     "maxScryptWorkFactor": 20,
     # Package spec §4.6: the bytes of one manifest image (and of an envelope's cover copy).
     "maxImageBytes": 1024 * 1024,
+    # Contract §3: attestation files in one package, and the bytes of one of them.
+    "maxAttestations": 256,
+    "maxAttestationBytes": 1024 * 1024,
 }
 
 
@@ -169,11 +172,13 @@ def _assert_safe_archive_path(name: str) -> None:
 
 def _entry_name(info: zipfile.ZipInfo) -> str:
     # Contract §3: entry names are UTF-8. A name with bytes outside ASCII and without the UTF-8 flag (general
-    # purpose bit 11) is rejected, not guessed. zipfile cuts names at NUL; orig_filename keeps it.
+    # purpose bit 11) is rejected, not guessed. The name is the central directory's file name field
+    # (orig_filename): zipfile's filename cuts it at NUL, changes separators, and may take the Info-ZIP Unicode
+    # path extra field instead, which contract §3 ignores.
     if "\0" in info.orig_filename:
         raise TargetError("T003_ARCHIVE_REJECTED", "archive entry name contains NUL")
     if info.flag_bits & 0x800:
-        return info.filename
+        return info.orig_filename
     if not info.orig_filename.isascii():
         raise TargetError("T003_ARCHIVE_REJECTED", "archive entry name is not marked as UTF-8")
     return info.orig_filename
@@ -213,13 +218,19 @@ class _BufferFile(io.RawIOBase):
 def archive_source(
     archive: str | os.PathLike[str] | bytes | bytearray | memoryview, limits: dict[str, int] | None = None
 ) -> PackageSource:
-    """Opens a .moca/.zip archive in memory, without extracting it. A buffer is read in place."""
+    """Opens a .moca/.zip archive in memory, without extracting it. A buffer is read in place; a file is read
+    into memory once and closed."""
     lim = {**DEFAULT_LIMITS, **(limits or {})}
     in_memory = isinstance(archive, (bytes, bytearray, memoryview))
     try:
-        zf = zipfile.ZipFile(_BufferFile(archive) if in_memory else os.fspath(archive))  # type: ignore[arg-type]
+        buffer = archive if isinstance(archive, (bytes, bytearray, memoryview)) else Path(archive).read_bytes()
+    except OSError as err:
+        raise TargetError("T003_ARCHIVE_REJECTED", f"archive could not be opened: {err}") from err
+    check_archive_records(buffer)
+    try:
+        zf = zipfile.ZipFile(_BufferFile(buffer))
         infos = zf.infolist()
-    except (zipfile.BadZipFile, OSError, ValueError) as err:
+    except (zipfile.BadZipFile, OSError, ValueError, EOFError, NotImplementedError) as err:
         raise TargetError("T003_ARCHIVE_REJECTED", f"archive could not be opened: {err}") from err
     if len(infos) > lim["maxEntries"]:
         raise TargetError(
@@ -261,7 +272,8 @@ def archive_source(
         # Contract §3: a bad CRC-32, or bytes that do not fit the declared size, make the entry unreadable (P002).
         try:
             data = zf.read(info)
-        except (zipfile.BadZipFile, EOFError, zlib.error) as err:
+        # An entry zipfile cannot read (encrypted, damaged, or not what its directory entry says) is unreadable.
+        except (zipfile.BadZipFile, EOFError, zlib.error, RuntimeError, ValueError, NotImplementedError) as err:
             raise OSError(f"entry cannot be read: {err}") from err
         if len(data) != info.file_size:
             raise OSError(f"entry is {len(data)} bytes, not the {info.file_size} its header declares")
@@ -271,6 +283,69 @@ def archive_source(
     source = PackageSource("archive", lambda: listed, read, location)
     source.hidden_entries = hidden
     return source
+
+
+_END = 22  # the fixed part of the end-of-central-directory record
+
+
+def check_archive_records(buffer: bytes | bytearray | memoryview) -> None:
+    """Contract §3, "Directory": the records every Zip reader must agree on, checked before zipfile reads anything.
+    There is exactly one end-of-central-directory record that ends at the end of the file; it is not part of a
+    multi-disk or Zip64 archive; the central directory holds exactly the entries it declares; and each entry's
+    local header is where the directory says, with the same name and compression method. Anything else is T003."""
+    buf = memoryview(buffer).cast("B")
+    size_of = len(buf)
+
+    def u16(at: int) -> int:
+        return int.from_bytes(buf[at : at + 2], "little")
+
+    def u32(at: int) -> int:
+        return int.from_bytes(buf[at : at + 4], "little")
+
+    def reject(why: str) -> None:
+        raise TargetError("T003_ARCHIVE_REJECTED", f"archive {why}")
+
+    end = -1
+    for p in range(size_of - _END, max(0, size_of - _END - 0xFFFF) - 1, -1):
+        if u32(p) == 0x06054B50 and p + _END + u16(p + 20) == size_of:
+            if end != -1:
+                reject("has more than one end-of-central-directory record")
+            end = p
+    if end == -1:
+        reject("has no end-of-central-directory record at its end")
+    count, directory_size, offset = u16(end + 10), u32(end + 12), u32(end + 16)
+    if u16(end + 4) != 0 or u16(end + 6) != 0 or u16(end + 8) != count:
+        reject("is part of a multi-disk archive")
+    if (
+        count == 0xFFFF
+        or directory_size == 0xFFFFFFFF
+        or offset == 0xFFFFFFFF
+        or (end >= 20 and u32(end - 20) == 0x07064B50)
+    ):
+        reject("uses Zip64, which this version does not read")
+    stop = offset + directory_size
+    if stop > end:
+        reject("has a central directory that runs into its end record")
+    p = offset
+    for _ in range(count):
+        if p + 46 > stop or u32(p) != 0x02014B50:
+            reject("has a central directory that does not hold the entries it declares")
+        name_length = u16(p + 28)
+        following = p + 46 + name_length + u16(p + 30) + u16(p + 32)
+        if following > stop:
+            reject("has a central directory that does not hold the entries it declares")
+        local = u32(p + 42)
+        if u16(p + 34) != 0 or local + 30 + name_length > offset or u32(local) != 0x04034B50:
+            reject("has an entry whose local header is not where the central directory says")
+        same_name = (
+            u16(local + 26) == name_length
+            and buf[local + 30 : local + 30 + name_length] == buf[p + 46 : p + 46 + name_length]
+        )
+        if not same_name or u16(local + 8) != u16(p + 10):
+            reject("has an entry whose local header does not match the central directory")
+        p = following
+    if p != stop:
+        reject("has a central directory that does not hold the entries it declares")
 
 
 def host_source(host: Any, limits: dict[str, int] | None = None) -> PackageSource:
