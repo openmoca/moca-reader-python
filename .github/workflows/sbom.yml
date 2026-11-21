@@ -1,0 +1,36 @@
+name: SBOM
+
+# Security baseline: a CycloneDX software bill of materials for each release, attached to the GitHub release.
+# On a pull request that changes dependencies, the same document is built and kept as a workflow artifact, so the
+# path is proved before release day.
+on:
+  release:
+    types: [published]
+  pull_request:
+    paths: ['uv.lock', '**/uv.lock', '.github/workflows/sbom.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sbom:
+    name: CycloneDX SBOM
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # to attach the document to the release
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - run: mkdir -p "$RUNNER_TEMP/sbom"
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e  # v6.8.0
+      # uv builds the CycloneDX document from uv.lock; development dependencies are left out.
+      - run: uv export --format cyclonedx1.5 --no-dev --frozen -o "$RUNNER_TEMP/sbom/${{ github.event.repository.name }}.cdx.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: sbom
+          path: ${{ runner.temp }}/sbom/
+      - name: Attach to the release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.event.release.tag_name }}" "$RUNNER_TEMP"/sbom/*.cdx.json --clobber -R "${{ github.repository }}"
