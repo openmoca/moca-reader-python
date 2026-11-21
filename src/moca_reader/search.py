@@ -577,6 +577,7 @@ _STRICTEST_SOURCE: dict[str, Any] = {
                 "provider": False,
                 "training": False,
                 "machineTranslation": False,
+                "mention": False,
             },
             "answerSources": "work",
         },

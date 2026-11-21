@@ -39,6 +39,7 @@ FIELDS: Final[dict[str, tuple[Any, ...]]] = {
     "allowed.provider": (True, False),
     "allowed.training": (True, False),
     "allowed.machineTranslation": (True, False),
+    "allowed.mention": (True, False),
     "answerSources": ("model", "work"),
 }
 # Contract §15.3: used only when no level sets a field.
@@ -48,8 +49,11 @@ PLATFORM: Final[dict[str, Any]] = {
     "allowed.provider": True,
     "allowed.training": False,
     "allowed.machineTranslation": True,
+    "allowed.mention": True,
     "answerSources": "model",
 }
+# Contract §15.3 (moca-spec ADR-0041): fields with no node level. In a `nodes` entry they are U003 and have no effect.
+PACKAGE_ONLY: Final = frozenset({"allowed.mention"})
 _KNOWN_CONDITIONS: Final = frozenset({"noTraining", "noRetention"})
 DESTINATIONS: Final = ("device", "host", "provider")
 USES: Final = ("answer", "embed", "summarise", "train", "translate")
@@ -208,6 +212,8 @@ def loosened_nodes(terms: Any) -> list[dict[str, str]]:
     for i, entry in enumerate(nodes):
         entry_ai = _member(entry, "ai")
         for field in FIELDS:
+            if field in PACKAGE_ONLY:
+                continue
             pkg = _normalise(field, _ai_value(package_ai, field))
             node = _normalise(field, _ai_value(entry_ai, field))
             if pkg is not UNSET and node is not UNSET and _stricter(field, pkg, node):
@@ -268,20 +274,21 @@ def node_entry(terms: Any, path: str) -> dict[str, Any] | None:
 
 def resolve_ai(
     pkg: Mapping[str, Any],
-    path: str,
+    path: str | None,
     limits: Any = UNSET,
     composites: Iterable[Any] = (),
 ) -> dict[str, Resolved]:
     """Contract §15.3: the resolved ``ai`` terms for one node, each field ``{"value", "decidedBy"}``;
     ``providerRequires`` is a list of conditions.
 
-    ``pkg`` is ``{"terms", "authority"}``; ``limits`` the host's terms limits (an ``ai`` object: floors, never
+    ``pkg`` is ``{"terms", "authority"}``; ``path`` the node path under content/, or None for the package-level
+    terms, with no node level (contract §15.4, "Closed and hidden"); ``limits`` the host's terms limits (an ``ai`` object: floors, never
     values); ``composites`` the ``terms`` of composing packages whose signers speak for this package (step 3).
     """
     terms = pkg.get("terms")
     terms = terms if terms is not None else {}
     composites = list(composites)
-    node = node_entry(terms, path)
+    node = node_entry(terms, path) if path is not None else None
     terms_ai = _member(terms, "ai")
     node_ai = _member(node, "ai")
     out: dict[str, Resolved] = {}
@@ -292,6 +299,9 @@ def resolve_ai(
         # Each level applies only if it is as strict or stricter: no authority in this version lets a package
         # loosen the platform.
         for ai, level in levels:
+            # A package-level field has no node level, even under a malformed entry (contract §15.3).
+            if level == "node" and field in PACKAGE_ONLY:
+                continue
             n = _normalise(field, _ai_value(ai, field))
             if n is not UNSET and (_stricter(field, n, value) or n == value):
                 value, decided_by = n, level
@@ -323,17 +333,44 @@ def rating_of(terms: Any, path: str) -> Any:
     return False if own is None else own
 
 
+def _destination_of(wanted: Any) -> str:
+    """The destination a request's ``ai`` part names; an unknown or missing one is treated as the strictest,
+    provider."""
+    destination = _member(wanted, "destination")
+    return destination if isinstance(destination, str) and destination in DESTINATIONS else "provider"
+
+
+def _conditions_met(wanted: Any) -> set[str]:
+    listed = _member(wanted, "conditions")
+    return set(c for c in listed if isinstance(c, str)) if isinstance(listed, list) else set()
+
+
+def closure_of(request: Any, ai: Mapping[str, Resolved]) -> dict[str, Any]:
+    """Contract §15.4, "Closed and hidden": whether a package is closed for a request's ``ai`` part, from its
+    package-level resolved terms (``resolve_ai`` with no path), and whether it is hidden. A use never closes a
+    package. Returns ``{"closed", "closedBy", "hidden"}``."""
+    wanted = _member(request, "ai")
+    # As in JavaScript, any object (an array too) is an `ai` part; anything else closes nothing.
+    if not isinstance(wanted, (dict, list)):
+        return {"closed": False, "closedBy": [], "hidden": False}
+    destination = _destination_of(wanted)
+    closed_by: list[str] = []
+    if ai[f"allowed.{destination}"]["value"] is not True:
+        closed_by.append(f"ai.allowed.{destination}")
+    elif destination == "provider" and any(c not in _conditions_met(wanted) for c in ai["providerRequires"]["value"]):
+        closed_by.append("ai.providerRequires")
+    closed = bool(closed_by)
+    return {"closed": closed, "closedBy": closed_by, "hidden": closed and ai["allowed.mention"]["value"] is not True}
+
+
 def gate_reasons(request: Mapping[str, Any], ai: Mapping[str, Resolved], rating: Any) -> list[str]:
     """Contract §15.4: the reasons the terms gate removes a record, or an empty list. ``ai`` is the node's resolved
     terms; ``rating`` its effective rating (``rating_of``)."""
     reasons: list[str] = []
     wanted = request.get("ai")
     if truthy(wanted):
-        # An unknown or missing destination is treated as the strictest, provider.
-        destination = _member(wanted, "destination")
-        destination = destination if isinstance(destination, str) and destination in DESTINATIONS else "provider"
-        listed = _member(wanted, "conditions")
-        conditions = set(c for c in listed if isinstance(c, str)) if isinstance(listed, list) else set()
+        destination = _destination_of(wanted)
+        conditions = _conditions_met(wanted)
         if ai[f"allowed.{destination}"]["value"] is not True:
             reasons.append(f"ai.allowed.{destination}")
         elif destination == "provider" and any(c not in conditions for c in ai["providerRequires"]["value"]):

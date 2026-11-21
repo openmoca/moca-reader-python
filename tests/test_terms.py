@@ -13,6 +13,7 @@ from moca_reader import LexicalBackend, Library, Search, SearchHooks, read_packa
 from moca_reader.terms import (
     UNSET,
     check_terms,
+    closure_of,
     gate_reasons,
     loosened_nodes,
     node_entry,
@@ -135,6 +136,70 @@ def test_malformed_and_unknown_values_count_as_the_strictest() -> None:
         everyone = resolve_ai(pkg({"nodes": nodes}), "b.md")
         assert everyone["allowed.device"] == {"value": False, "decidedBy": "node"}
         assert everyone["answerSources"]["value"] == "work"
+
+
+def test_mention_resolves_like_every_allowed_field() -> None:
+    # Contract §15.3 (ADR-0041): platform default true; the stricter value applies whatever its authority.
+    assert resolve_ai(pkg({}), "a.md")["allowed.mention"] == {"value": True, "decidedBy": "platform"}
+    hidden = resolve_ai(pkg({"ai": {"allowed": {"mention": False}}}), "a.md")
+    assert hidden["allowed.mention"] == {"value": False, "decidedBy": "package"}
+    assert resolve_ai(pkg({}), None, {"allowed": {"mention": False}})["allowed.mention"]["decidedBy"] == "host"
+    composite = {"ai": {"allowed": {"mention": False}}}
+    assert resolve_ai(pkg({}), None, UNSET, [composite])["allowed.mention"]["decidedBy"] == "composite"
+    # Nothing loosens it: a host's true does not undo a package's false.
+    assert resolve_ai(pkg({"ai": {"allowed": {"mention": False}}}), None, {"allowed": {"mention": True}})[
+        "allowed.mention"
+    ] == {"value": False, "decidedBy": "package"}
+    # Malformed fails closed: a value that is not a boolean, or a malformed container.
+    assert resolve_ai(pkg({"ai": {"allowed": {"mention": "no"}}}), None)["allowed.mention"]["value"] is False
+    for ai in ({"allowed": False}, "none"):
+        assert resolve_ai(pkg({"ai": ai}), None)["allowed.mention"]["value"] is False
+
+
+def test_mention_is_package_level_only() -> None:
+    # In a nodes entry it is U003, has no effect, and is never reported as loosened.
+    terms = {
+        "ai": {"allowed": {"mention": False}},
+        "nodes": [{"paths": ["content/a.md"], "ai": {"allowed": {"mention": True}}}],
+    }
+    assert problems(terms) == {"U003_TERMS_UNKNOWN_VALUE nodes.0.ai.allowed.mention"}
+    assert loosened_nodes(terms) == []
+    assert resolve_ai(pkg(terms), "a.md")["allowed.mention"] == {"value": False, "decidedBy": "package"}
+    node_only = {"nodes": [{"paths": ["content/a.md"], "ai": {"allowed": {"mention": False}}}]}
+    assert resolve_ai(pkg(node_only), "a.md")["allowed.mention"]["value"] is True
+    # A malformed nodes entry makes every node's other fields the strictest, never mention.
+    assert resolve_ai(pkg({"nodes": {}}), "a.md")["allowed.mention"]["value"] is True
+
+
+def test_closed_and_hidden() -> None:
+    # Contract §15.4: from the package-level resolved terms; a use never closes a package.
+    def closure(terms: Any, request: Any, limits: Any = UNSET) -> dict[str, Any]:
+        return closure_of(request, resolve_ai(pkg(terms), None, limits))
+
+    provider = {"ai": {"destination": "provider"}}
+    assert closure({}, provider) == {"closed": False, "closedBy": [], "hidden": False}
+    assert closure({}, {}) == {"closed": False, "closedBy": [], "hidden": False}
+    closed = {"ai": {"allowed": {"provider": False}}}
+    assert closure(closed, provider) == {"closed": True, "closedBy": ["ai.allowed.provider"], "hidden": False}
+    assert closure(closed, {"ai": {"destination": "host"}})["closed"] is False
+    # An unknown or missing destination is provider.
+    assert closure(closed, {"ai": {"destination": "elsewhere"}})["closedBy"] == ["ai.allowed.provider"]
+    assert closure(closed, {"ai": {}})["closed"] is True
+    hidden = {"ai": {"allowed": {"provider": False, "mention": False}}}
+    assert closure(hidden, provider) == {"closed": True, "closedBy": ["ai.allowed.provider"], "hidden": True}
+    # mention changes nothing while the destination is allowed.
+    assert closure({"ai": {"allowed": {"mention": False}}}, provider)["hidden"] is False
+    conditions = {"ai": {"providerRequires": ["noTraining"]}}
+    assert closure(conditions, provider)["closedBy"] == ["ai.providerRequires"]
+    assert closure(conditions, {"ai": {"destination": "provider", "conditions": ["noTraining"]}})["closed"] is False
+    for use in ("train", "translate"):
+        assert closure({}, {"ai": {"destination": "provider", "use": use}})["closed"] is False
+    # A malformed container closes the package for every destination and hides it.
+    for d in ("device", "host", "provider"):
+        assert closure({"ai": {"allowed": False}}, {"ai": {"destination": d}})["hidden"] is True
+    # A host limit of false hides every closed package, and only those.
+    assert closure(closed, provider, {"allowed": {"mention": False}})["hidden"] is True
+    assert closure({}, provider, {"allowed": {"mention": False}})["hidden"] is False
 
 
 def test_export_resolves_from_package_and_composites() -> None:
