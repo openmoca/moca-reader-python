@@ -29,10 +29,81 @@ OWL = "http://www.w3.org/2002/07/owl#"
 ABSOLUTE_IRI = re.compile(
     r"^[A-Za-z][A-Za-z0-9+.-]*:[^\t\n\v\f\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]+\Z"
 )
-_PREFIX_DECL = re.compile(
-    r"^[\t\n\v\f\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]*(?:@prefix|PREFIX)[\t\n\v\f\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]+([A-Za-z][A-Za-z0-9_.-]*)?:",
-    re.IGNORECASE | re.ASCII | re.MULTILINE,
-)
+# White space as the reference Reader's \s reads it (ECMAScript white space and line terminators). Each pattern
+# below is one character class, matched only at a given position, so it reads each character at most once.
+_SPACE_RUN = re.compile(r"[\t\n\v\f\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]*")
+_PREFIX_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_.-]*", re.ASCII)
+
+
+def _keyword_at(text: str, i: int) -> int:
+    """The length of ``@prefix`` or ``PREFIX`` (ASCII letters in any case) at i, or 0."""
+    for keyword in ("@prefix", "prefix"):
+        found = text[i : i + len(keyword)]
+        if found.isascii() and found.lower() == keyword:
+            return len(keyword)
+    return 0
+
+
+def declared_prefixes(text: str) -> tuple[list[str], int]:
+    """The prefixes a Turtle text declares, and the steps it took: a line that starts, after white space, with
+    ``@prefix`` or ``PREFIX`` (any case), white space, then an optional name and a colon. One pass over the text, a
+    line at a time; white space that runs across several lines is read once, however many lines it covers. A step
+    is one character read (a keyword test that fails reads at most seven, once per line), and no character is read
+    more than twice, so the steps never pass twice the length of the text."""
+    names: list[str] = []
+    n = len(text)
+    i = 0
+    steps = 0
+    # True when a line start reaches position i through white space alone.
+    line_start = True
+    while i < n:
+        if not line_start:
+            newline = text.find("\n", i)
+            steps += (n if newline < 0 else newline + 1) - i
+            if newline < 0:
+                break
+            i = newline + 1
+            line_start = True
+            continue
+
+        spaces = _SPACE_RUN.match(text, i).end()  # type: ignore[union-attr]  # a * pattern always matches
+        steps += spaces - i
+        i = spaces
+
+        keyword = _keyword_at(text, i)
+        if keyword == 0:
+            line_start = False
+            continue
+
+        steps += keyword
+        after_keyword = i + keyword
+        name = _SPACE_RUN.match(text, after_keyword).end()  # type: ignore[union-attr]
+        steps += name - after_keyword
+        if name == after_keyword:
+            i = after_keyword
+            line_start = False
+            continue
+
+        named = _PREFIX_NAME.match(text, name)
+        colon = named.end() if named else name
+        steps += colon - name
+
+        if colon < n and text[colon] == ":":
+            if colon > name:
+                names.append(text[name:colon])
+            i = colon + 1
+            line_start = False
+            continue
+
+        # No declaration here. A line that starts inside the white space after the keyword reaches the same place,
+        # so the search goes on from there. White space here is read twice (its run, then this look for a line
+        # break), and a name twice (its run, then the next search or keyword test).
+        steps += name - after_keyword
+        i = name
+        line_start = text.find("\n", after_keyword, name) >= 0
+    return names, steps
+
+
 # rdflib resolves relative IRIs against a base; this one marks them, so they are reported as the
 # reference Reader reports them: not absolute.
 _RELATIVE_BASE = "https://moca-relative.invalid/base/"
@@ -138,7 +209,7 @@ def parse_structure(
         )
         return facts, prefixes, False
     source = text.decode("utf-8", errors="replace") if isinstance(text, bytes) else text
-    prefixes.update(m[1] for m in _PREFIX_DECL.finditer(source) if m[1])
+    prefixes.update(declared_prefixes(source)[0])
     store = _Recorder()
     try:
         _parse_turtle(source, store)

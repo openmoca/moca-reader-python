@@ -112,6 +112,8 @@ definitions, text sent for embedding, and what is said about packages.
   (and a host overlay) is one level, counted by the Turtle parser itself as it reads, so a bracket in an IRI, a
   string, a comment or a name never counts. Past the limit the file is `O001`. The parse runs on a thread of its
   own, so whether 64 levels are read never depends on the caller's stack.
+- Structure: prefix declarations are found in one pass. `structure.ttl` and host overlays are read a line at a time,
+  and white space across several lines is read once.
 
 ### Added (credits: package spec §4.13)
 
