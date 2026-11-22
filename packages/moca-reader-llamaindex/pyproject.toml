@@ -10,7 +10,7 @@ readme = "README.md"
 license = "Apache-2.0"
 authors = [{ name = "MOCA Standard Contributors" }]
 requires-python = ">=3.11"
-dependencies = ["moca-reader==0.7.0", "llama-index-core>=0.14"]
+dependencies = ["moca-reader==0.7.0", "llama-index-core>=0.14.26"]
 keywords = ["moca", "llamaindex", "llama-index", "retriever", "rag", "citations"]
 classifiers = ["Development Status :: 4 - Beta", "Programming Language :: Python :: 3", "Typing :: Typed"]
 
