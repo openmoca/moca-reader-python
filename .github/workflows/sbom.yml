@@ -22,7 +22,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
       - run: mkdir -p "$RUNNER_TEMP/sbom"
-      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e  # v6.8.0
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d  # v10.4.0
       # uv builds the CycloneDX document from uv.lock; development dependencies are left out.
       - run: uv export --format cyclonedx1.5 --no-dev --frozen -o "$RUNNER_TEMP/sbom/${{ github.event.repository.name }}.cdx.json"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
