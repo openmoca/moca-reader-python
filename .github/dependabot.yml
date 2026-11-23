@@ -5,7 +5,18 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    # Wait a week after a release before proposing it, so a hijacked release is likely caught first.
+    cooldown:
+      default-days: 7
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+    # Wait a week after a release before proposing it, so a hijacked release is likely caught first.
+    cooldown:
+      default-days: 7
+    # One PR for all action updates, so each workflow moves together.
+    groups:
+      actions:
+        patterns:
+          - "*"
