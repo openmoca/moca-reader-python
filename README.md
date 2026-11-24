@@ -185,7 +185,7 @@ mapping, in the specification.
 
 | Standard | Where | How strongly |
 | --- | --- | --- |
-| [Open Knowledge Format](https://github.com/GoogleCloudPlatform/open-knowledge-format/blob/ad30107c31c06aec8a7d5636e0d1058118604e6f/SPEC.md) v0.2, pinned at commit `ad30107` | `content/` is an OKF bundle | follow (pinned) |
+| [Open Knowledge Format](https://github.com/open-knowledge-format/open-knowledge-format/blob/ad30107c31c06aec8a7d5636e0d1058118604e6f/SPEC.md) v0.2, pinned at commit `ad30107` | `content/` is an OKF bundle | follow (pinned) |
 | [YAML 1.2](https://yaml.org/spec/1.2.2/), core schema | frontmatter; aliases and tags outside the core schema are refused | follow |
 | [JSON Schema 2020-12](https://json-schema.org/draft/2020-12) | the vendored schemas, byte-identical to moca-spec's | follow |
 | [Ed25519](https://www.rfc-editor.org/rfc/rfc8032) (RFC 8032) and [in-toto Statement v1](https://github.com/in-toto/attestation) in DSSE envelopes | package and review attestations | follow |
